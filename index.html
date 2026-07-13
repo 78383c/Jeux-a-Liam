@@ -9,7 +9,7 @@
 <style>
   html,body{margin:0;padding:0;overflow:hidden;background:#14161a;font-family:'Segoe UI',Roboto,sans-serif;
     touch-action:none;-webkit-user-select:none;user-select:none;overscroll-behavior:none}
-  #root{width:100vw;height:100vh;position:relative}
+  #root{width:100vw;height:100vh;height:100dvh;position:relative}
   canvas{display:block}
 
   /* HUD */
@@ -105,8 +105,9 @@
   .pause-btn.pfocused{border-color:#4ade80;color:#fff;background:rgba(74,222,128,0.1)}
   .pause-hint{font-size:11px;color:#4b5563;text-align:center}
 
-  /* Touch controls */
-  #touchControls{position:absolute;inset:0;display:none;pointer-events:none}
+  /* Touch controls — fixed to the *visible* viewport (dvh) so joysticks and
+     the pause button never slip behind the mobile browser's address/nav bars. */
+  #touchControls{position:fixed;left:0;top:0;width:100vw;height:100vh;height:100dvh;display:none;pointer-events:none;z-index:5}
   .joy-base{position:absolute;bottom:26px;width:120px;height:120px;border-radius:50%;
     background:rgba(255,255,255,0.07);border:2px solid rgba(255,255,255,0.18);
     touch-action:none;pointer-events:auto}
@@ -251,6 +252,7 @@
   <div class="ctrl-row" id="ctrlIndicator"></div>
   <div style="display:flex;gap:10px;margin-top:20px">
     <button class="ui-btn ui-btn-gray" id="showLeaderboardBtn" style="margin:0">🏆 Scores</button>
+    <button class="ui-btn ui-btn-gray" id="fullscreenBtn" style="margin:0;display:none">⛶ Plein écran</button>
   </div>
 </div>
 
@@ -456,20 +458,26 @@ function rollChoices(n,weapon,player){
 
 // ── Gamepad state (debounced) ─────────────────────────────
 const gpCur={},gpPrev={};
-
-function getNthGP(n){
+// Cache of connected gamepads for the current frame. navigator.getGamepads()
+// allocates a fresh array on every call and is surprisingly expensive on
+// mobile — calling it once per frame (in pollGP) instead of dozens of times
+// removes the biggest source of phone lag.
+let gpFrameCache=[];
+function refreshGPCache(){
   try{
     const list=navigator.getGamepads?navigator.getGamepads():[];
-    let c=0;
-    for(let i=0;i<list.length;i++){if(list[i]&&list[i].connected){if(c===n)return list[i];c++}}
-  }catch(e){}
-  return null;
+    gpFrameCache=[];
+    for(let i=0;i<list.length;i++){if(list[i]&&list[i].connected)gpFrameCache.push(list[i])}
+  }catch(e){gpFrameCache=[]}
 }
+function getNthGP(n){return gpFrameCache[n]||null}
+
 function pollGP(){
+  refreshGPCache(); // single getGamepads() call per frame
   // Copy cur→prev, then read fresh state
   Object.assign(gpPrev,gpCur);
   for(let n=0;n<4;n++){
-    const gp=getNthGP(n);
+    const gp=gpFrameCache[n];
     for(const b of WATCHED_BTNS){
       gpCur[`${n}_${b}`]=gp?.buttons[b]?.pressed||false;
     }
@@ -479,10 +487,7 @@ function jp(gpIdx,btn){ // "just pressed"
   const k=`${gpIdx}_${btn}`;
   return (gpCur[k]||false)&&!(gpPrev[k]||false);
 }
-function connectedGPCount(){
-  try{return Array.from(navigator.getGamepads?navigator.getGamepads():[]).filter(g=>g&&g.connected).length}
-  catch(e){return 0}
-}
+function connectedGPCount(){return gpFrameCache.length}
 
 // ── Input: GAMEPAD PRIORITY — never mix sources ───────────
 // If gamepad gives any movement, keyboard is ignored for that player.
@@ -703,6 +708,7 @@ const backToModeBtn=document.getElementById("backToModeBtn");
 const leaderboardOverlay=document.getElementById("leaderboardOverlay");
 const leaderboardList=document.getElementById("leaderboardList");
 const showLeaderboardBtn=document.getElementById("showLeaderboardBtn");
+const fullscreenBtn=document.getElementById("fullscreenBtn");
 const closeLeaderboardBtn=document.getElementById("closeLeaderboardBtn");
 const upgradeOverlay=document.getElementById("upgradeOverlay");
 const upgradeSub=document.getElementById("upgradeSub"),upgradeTitle=document.getElementById("upgradeTitle");
@@ -764,6 +770,38 @@ if(isMobile){
 // A player is controlled by exactly ONE source at a time (see getInput).
 const isTouchDevice=("ontouchstart" in window)||navigator.maxTouchPoints>0;
 const touchJoy=[{active:false,id:null,dx:0,dy:0},{active:false,id:null,dx:0,dy:0}];
+
+// ── Fullscreen ─────────────────────────────────────────────
+// Browsers only allow entering fullscreen from a user gesture (tap/click),
+// so we can't force it on load — we call this from button handlers instead.
+function isFullscreen(){
+  return !!(document.fullscreenElement||document.webkitFullscreenElement);
+}
+function requestFullscreen(){
+  const el=document.documentElement;
+  const fn=el.requestFullscreen||el.webkitRequestFullscreen||el.mozRequestFullScreen||el.msRequestFullscreen;
+  if(fn){try{const r=fn.call(el);if(r&&r.catch)r.catch(()=>{})}catch(e){}}
+}
+function exitFullscreen(){
+  const fn=document.exitFullscreen||document.webkitExitFullscreen||document.mozCancelFullScreen||document.msExitFullscreen;
+  if(fn){try{fn.call(document)}catch(e){}}
+}
+// Best-effort: enter fullscreen when starting a game on a touch device.
+// This runs inside the tap handler chain (Solo/Co-op/Online → skin → weapon),
+// which counts as a user gesture, so it's allowed.
+function tryEnterFullscreenOnMobile(){
+  if(isTouchDevice&&!isFullscreen())requestFullscreen();
+}
+function updateFullscreenBtn(){
+  if(!isTouchDevice){fullscreenBtn.style.display="none";return}
+  fullscreenBtn.style.display="inline-block";
+  fullscreenBtn.textContent=isFullscreen()?"⛶ Quitter plein écran":"⛶ Plein écran";
+}
+if(fullscreenBtn){
+  fullscreenBtn.onclick=()=>{isFullscreen()?exitFullscreen():requestFullscreen();setTimeout(updateFullscreenBtn,100)};
+}
+document.addEventListener("fullscreenchange",updateFullscreenBtn);
+document.addEventListener("webkitfullscreenchange",updateFullscreenBtn);
 
 function setupJoystick(baseEl,knobEl,pid){
   const RADIUS=48; // max travel distance in px
@@ -839,8 +877,8 @@ window.addEventListener("keydown",e=>{
   if(e.key==="Escape"&&game&&!game.gameOver&&upgradeOverlay.style.display==="none")togglePause();
 });
 window.addEventListener("keyup",e=>{keys[e.key.toLowerCase()]=false});
-window.addEventListener("gamepadconnected",()=>{if(modeSelectOverlay.style.display==="flex")refreshModeSelect()});
-window.addEventListener("gamepaddisconnected",()=>{if(modeSelectOverlay.style.display==="flex")refreshModeSelect()});
+window.addEventListener("gamepadconnected",()=>{refreshGPCache();if(modeSelectOverlay.style.display==="flex")refreshModeSelect()});
+window.addEventListener("gamepaddisconnected",()=>{refreshGPCache();if(modeSelectOverlay.style.display==="flex")refreshModeSelect()});
 
 // ── Player factory ────────────────────────────────────────
 function mkPlayer(weaponId,x,y,id,skinCode){
@@ -963,6 +1001,7 @@ function refreshModeSelect(){
     `<span><span class="ctrl-dot ${n>=1?"on":""}"></span>Manette 1</span>`+
     `<span><span class="ctrl-dot ${n>=2?"on":""}"></span>Manette 2</span>`+
     mobileHint+touchHint+padHint;
+  updateFullscreenBtn();
 }
 function showModeSelect(){
   [skinSelectOverlay,weaponSelectOverlay,onlineSetupOverlay,upgradeOverlay,gameOverOverlay,pauseOverlay,leaderboardOverlay]
@@ -1106,9 +1145,10 @@ function showWaitingForWeapon(){
   upgradeOverlay.style.display="flex";
 }
 
-soloBtn.onclick=()=>{gameMode="solo";selectedWeapons=[];selectedSkins=[null,null];showSkinSelect(0)};
-coopBtn.onclick=()=>{gameMode="coop";selectedWeapons=[];selectedSkins=[null,null];showSkinSelect(0)};
+soloBtn.onclick=()=>{tryEnterFullscreenOnMobile();gameMode="solo";selectedWeapons=[];selectedSkins=[null,null];showSkinSelect(0)};
+coopBtn.onclick=()=>{tryEnterFullscreenOnMobile();gameMode="coop";selectedWeapons=[];selectedSkins=[null,null];showSkinSelect(0)};
 onlineBtn.onclick=()=>{
+  tryEnterFullscreenOnMobile();
   gameMode="online";selectedWeapons=[];selectedSkins=[null,null];
   netPeerSkin=null;netPeerWeapon=null;
   modeSelectOverlay.style.display="none";
@@ -1681,9 +1721,13 @@ function sendLocalInputIfDue(now){
 // ── Render ────────────────────────────────────────────────
 function render(){
   ctx.fillStyle="#1c1f26";ctx.fillRect(0,0,W,H);
+  // Batch the whole grid into ONE path + ONE stroke. Doing beginPath/stroke
+  // per line was dozens of draw calls every frame — costly on mobile GPUs.
   ctx.strokeStyle="rgba(255,255,255,0.04)";ctx.lineWidth=1;
-  for(let x=0;x<W;x+=60){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}
-  for(let y=0;y<H;y+=60){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
+  ctx.beginPath();
+  for(let x=0;x<W;x+=60){ctx.moveTo(x,0);ctx.lineTo(x,H)}
+  for(let y=0;y<H;y+=60){ctx.moveTo(0,y);ctx.lineTo(W,y)}
+  ctx.stroke();
   if(!game)return;
   const p=game.players;
 
@@ -1777,7 +1821,7 @@ let menuFocusIdx=0;
 let lastFocusedOverlay=null;
 function menuNavConfig(){
   return [
-    {el:modeSelectOverlay,btns:[soloBtn,coopBtn,onlineBtn,showLeaderboardBtn]},
+    {el:modeSelectOverlay,btns:[soloBtn,coopBtn,onlineBtn,showLeaderboardBtn,fullscreenBtn]},
     {el:onlineSetupOverlay,btns:onlineSetupButtons()},
     {el:leaderboardOverlay,btns:[closeLeaderboardBtn]},
     {el:gameOverOverlay,btns:[restartBtn]},
@@ -1797,7 +1841,7 @@ function applyMenuFocusStyle(btns){
   });
 }
 function clearMenuFocusStyle(){
-  [soloBtn,coopBtn,onlineBtn,showLeaderboardBtn,hostGameBtn,joinGameBtn,
+  [soloBtn,coopBtn,onlineBtn,showLeaderboardBtn,fullscreenBtn,hostGameBtn,joinGameBtn,
    copyRoomCodeBtn,joinRoomBtn,backFromOnlineBtn,closeLeaderboardBtn,restartBtn]
     .forEach(b=>{if(b){b.style.outline="";b.style.outlineOffset=""}});
 }
