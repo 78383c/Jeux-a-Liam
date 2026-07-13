@@ -512,6 +512,25 @@ function refreshGPCache(){
 }
 function getNthGP(n){return gpFrameCache[n]||null}
 
+// Keyboard → virtual gamepad button mapping for MENU navigation only
+// (arrow keys / Enter / Backspace). Mirrored into both slot 0 and slot 1 so
+// every existing controller-nav handler (which reads slot 0, slot 1, or
+// loops over all slots depending on the screen) responds identically to a
+// keyboard as it does to a real gamepad or a touch tap — one navigation
+// system, uniform across mouse, touch, keyboard, and controller.
+const kbSim={};
+const KB_MENU_MAP={arrowup:12,arrowdown:13,arrowleft:14,arrowright:15,enter:0," ":0,backspace:1};
+window.addEventListener("keydown",e=>{
+  const tag=(e.target.tagName||"").toLowerCase();
+  if(tag==="input"||tag==="textarea")return; // let normal typing happen (e.g. room code field)
+  const btn=KB_MENU_MAP[e.key.toLowerCase()];
+  if(btn!==undefined)kbSim[btn]=true;
+});
+window.addEventListener("keyup",e=>{
+  const btn=KB_MENU_MAP[e.key.toLowerCase()];
+  if(btn!==undefined)kbSim[btn]=false;
+});
+
 function pollGP(){
   refreshGPCache(); // single getGamepads() call per frame
   // Copy cur→prev, then read fresh state
@@ -519,7 +538,10 @@ function pollGP(){
   for(let n=0;n<4;n++){
     const gp=gpFrameCache[n];
     for(const b of WATCHED_BTNS){
-      gpCur[`${n}_${b}`]=gp?.buttons[b]?.pressed||false;
+      let pressed=gp?.buttons[b]?.pressed||false;
+      // Only slots 0/1 receive keyboard-simulated menu input (see kbSim above).
+      if((n===0||n===1)&&kbSim[b])pressed=true;
+      gpCur[`${n}_${b}`]=pressed;
     }
   }
 }
@@ -936,9 +958,17 @@ function setTouchControlsVisible(visible){
   if(visible)joyBase2.style.display=gameMode==="coop"?"block":"none";
 }
 
-window.addEventListener("resize",()=>{
-  W=window.innerWidth;H=window.innerHeight;canvas.width=W;canvas.height=H;
-  // Rotating the phone changes W/H — pull any players back inside the new
+// Mobile browsers show/hide their address bar during scroll and gameplay,
+// and window.innerWidth/innerHeight don't always update reliably when that
+// happens (especially iOS Safari) — leaving parts of the playfield hidden
+// behind browser chrome. visualViewport tracks the REAL visible area and
+// fires its own events whenever it changes, so we sync from it when present.
+function syncViewportSize(){
+  const vv=window.visualViewport;
+  W=vv?Math.round(vv.width):window.innerWidth;
+  H=vv?Math.round(vv.height):window.innerHeight;
+  canvas.width=W;canvas.height=H;
+  // Rotating/resizing changes W/H — pull any players back inside the new
   // bounds so they can't end up stranded off the visible area.
   if(game){
     for(const p of game.players){
@@ -946,8 +976,14 @@ window.addEventListener("resize",()=>{
       p.y=Math.max(PLAYER_RADIUS,Math.min(H-PLAYER_RADIUS,p.y));
     }
   }
-});
-canvas.width=W;canvas.height=H;
+}
+window.addEventListener("resize",syncViewportSize);
+window.addEventListener("orientationchange",()=>setTimeout(syncViewportSize,50));
+if(window.visualViewport){
+  window.visualViewport.addEventListener("resize",syncViewportSize);
+  window.visualViewport.addEventListener("scroll",syncViewportSize);
+}
+syncViewportSize();
 
 window.addEventListener("keydown",e=>{
   keys[e.key.toLowerCase()]=true;
@@ -1127,10 +1163,15 @@ function refreshModeSelect(){
         🎮 Manette: D-pad pour naviguer · A pour choisir
       </div>`
     :"";
+  const kbHint=(!isTouchDevice&&n===0)
+    ?`<div style="margin-top:6px;font-size:12px;color:#6b7280;text-align:center">
+        ⌨ Clavier: flèches pour naviguer · Entrée pour choisir
+      </div>`
+    :"";
   ctrlIndicator.innerHTML=
     `<span><span class="ctrl-dot ${n>=1?"on":""}"></span>Manette 1</span>`+
     `<span><span class="ctrl-dot ${n>=2?"on":""}"></span>Manette 2</span>`+
-    mobileHint+touchHint+padHint;
+    mobileHint+touchHint+padHint+kbHint;
   updateFullscreenBtn();
 }
 function showModeSelect(){
