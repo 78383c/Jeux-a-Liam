@@ -145,6 +145,20 @@
   .net-warn{font-size:11px;color:#f59e0b;text-align:center;max-width:460px;margin-top:14px}
   .net-label{font-size:12px;color:#6b7280;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px}
 
+  /* Lobby */
+  .lobby-card{background:#1a1d24;border:2px solid #374151;border-radius:12px;
+    padding:12px 16px;min-width:150px;text-align:center;transition:border-color .2s}
+  .lobby-card.ready{border-color:#4ade80}
+  .lobby-card-name{font-size:13px;font-weight:800;margin-bottom:8px}
+  .lobby-card-flag{width:44px;height:44px;border-radius:50%;margin:0 auto 8px;
+    background:#0f1115;overflow:hidden;border:2px solid rgba(255,255,255,0.1)}
+  .lobby-card-flag img{width:100%;height:100%;display:block}
+  .lobby-card-weapon{font-size:12px;color:#d1d5db;margin-bottom:6px}
+  .lobby-card-status{font-size:12px;font-weight:700}
+  .lobby-card-status.ready{color:#4ade80}
+  .lobby-card-status.notready{color:#f59e0b}
+  .flag-btn.locked,.card.locked{opacity:0.5;pointer-events:none}
+
   /* ── Mobile / small-screen optimizations ─────────────────
      Phones (esp. in landscape, which is short in height) need tighter HUDs,
      smaller cards, and controls that don't overlap. Triggered by viewport
@@ -292,6 +306,26 @@
 
   <div class="net-warn">🌐 Connexion directe navigateur-à-navigateur (WebRTC via PeerJS). Un service public gratuit sert juste d'annuaire pour que vos deux appareils se trouvent — comme un bottin, pas un centre d'appels — ensuite les données de jeu passent directement entre vous, sans transiter par un serveur.<br><br>💡 <b>Ça marche mieux sur le même Wi-Fi.</b> Si un des deux appareils est en données mobiles, certains opérateurs empêchent la connexion directe — connectez les deux au même Wi-Fi (ou un partage de connexion) si ça ne marche pas.</div>
   <button class="ui-btn ui-btn-gray" id="backFromOnlineBtn" style="margin-top:16px">← Retour</button>
+</div>
+
+<!-- Online Lobby -->
+<div class="overlay" id="lobbyOverlay" style="display:none">
+  <div class="ot-small">Salon en ligne</div>
+  <div class="ot-big">Préparez-vous</div>
+  <div id="lobbyPlayers" style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center;margin-top:18px;max-width:96vw"></div>
+  <div style="margin-top:16px">
+    <div class="ot-small" style="text-align:center;margin-bottom:8px" id="lobbySkinLabel">Ton drapeau</div>
+    <div class="flag-grid" id="lobbySkinCards" style="max-width:96vw"></div>
+  </div>
+  <div style="margin-top:12px">
+    <div class="ot-small" style="text-align:center;margin-bottom:8px">Ton arme</div>
+    <div class="cards" id="lobbyWeaponCards" style="max-width:96vw"></div>
+  </div>
+  <div style="margin-top:16px;display:flex;gap:12px">
+    <button class="ui-btn ui-btn-green" id="lobbyReadyBtn">✓ Prêt</button>
+    <button class="ui-btn ui-btn-gray" id="lobbyLeaveBtn">← Quitter</button>
+  </div>
+  <div style="margin-top:10px;font-size:12px;color:#4b5563;text-align:center" id="lobbyHint"></div>
 </div>
 
 <!-- Skin Select -->
@@ -619,6 +653,8 @@ function closeNetConnection(){
   try{peer?.destroy()}catch(e){}
   peer=null;conn=null;netConnected=false;isHost=false;roomCode=null;
   netRemoteInput={dx:0,dy:0};netPeerSkin=null;netPeerWeapon=null;
+  lobby[0]={skin:"fr",weapon:"saber",ready:false};
+  lobby[1]={skin:"us",weapon:"smg",ready:false};
 }
 // PeerJS serializes plain objects for us — no manual JSON.stringify/parse needed.
 function sendMsg(msg){
@@ -632,15 +668,24 @@ function onNetConnected(){
   netIndicatorOn();
   onlineSetupOverlay.style.display="none";
   gameMode="online";
-  showSkinSelect(isHost?0:1); // host is always P1(green), guest is always P2(blue)
+  // Reset lobby to defaults each session.
+  lobby[0]={skin:"fr",weapon:"saber",ready:false};
+  lobby[1]={skin:"us",weapon:"smg",ready:false};
+  openLobby();
+  // Announce our initial (default) choices so the peer's view is populated.
+  sendLobbyState();
 }
 
 // ── Network message dispatch (single channel, tagged by `t`) ─
 function handleMessage(msg){
   _netRecv++;netIndicatorUpdate();
   switch(msg.t){
-    case"skin":netPeerSkin=msg.code;maybeStartOnlineGame();break;
-    case"weapon":netPeerWeapon=msg.id;maybeStartOnlineGame();break;
+    case"lobby":
+      // Peer sent their slot's full state; store it and refresh our view.
+      if(msg.slot!==mySlot()){lobby[msg.slot]={skin:msg.skin,weapon:msg.weapon,ready:msg.ready}}
+      renderLobby();
+      maybeStartFromLobby();
+      break;
     case"startGame":startOnlineGuestGame(msg);break;
     case"upgradePrompt":showNetworkUpgradePrompt(msg.choices);break;
     case"upgradeChoice":applyNetworkUpgradeChoice(msg.id);break;
@@ -720,6 +765,13 @@ const joinCodeInput=document.getElementById("joinCodeInput"),joinRoomBtn=documen
 const joinStatus=document.getElementById("joinStatus");
 const backFromOnlineBtn=document.getElementById("backFromOnlineBtn");
 const onlineBtn=document.getElementById("onlineBtn");
+const lobbyOverlay=document.getElementById("lobbyOverlay");
+const lobbyPlayers=document.getElementById("lobbyPlayers");
+const lobbySkinCards=document.getElementById("lobbySkinCards");
+const lobbyWeaponCards=document.getElementById("lobbyWeaponCards");
+const lobbyReadyBtn=document.getElementById("lobbyReadyBtn");
+const lobbyLeaveBtn=document.getElementById("lobbyLeaveBtn");
+const lobbyHint=document.getElementById("lobbyHint");
 const weaponSelectOverlay=document.getElementById("weaponSelectOverlay");
 const weaponSelectSub=document.getElementById("weaponSelectSub");
 const weaponCards=document.getElementById("weaponCards");
@@ -762,6 +814,19 @@ let isHost=false,netConnected=false;
 let netRemoteInput={dx:0,dy:0};      // host: latest input received from guest
 let netPeerSkin=null,netPeerWeapon=null; // temp storage during handshake
 let waitingResendTimer=null; // re-announces picks until the online game starts
+
+// ── Lobby state ────────────────────────────────────────────
+// Both players' choices live here. Each side owns its own slot (host=0,
+// guest=1) and broadcasts changes; the other side stores them read-only.
+// A default skin/weapon is pre-selected so "ready" is always valid.
+const lobby={
+  0:{skin:"fr",weapon:"saber",ready:false},
+  1:{skin:"us",weapon:"smg",ready:false},
+};
+function mySlot(){return isHost?0:1}
+function peerSlot(){return isHost?1:0}
+let lobbyFocusZone="skin"; // "skin" | "weapon" | "ready" for controller nav
+let lobbySkinFocus=0,lobbyWeaponFocus=0;
 let netLastStateSendTime=0;
 const NET_STATE_INTERVAL=1000/15; // throttle state broadcast to ~15Hz
 const PAUSE_BTN_COUNT=2;
@@ -930,7 +995,7 @@ function initGame(wIds,skins){
     waveTimer:WAVE_DURATION,kills:0,score:0,
     waveActive:true,gameOver:false,paused:false,tipLocked:false,
     pendingUpgrades:[],lastTime:performance.now()};
-  [modeSelectOverlay,skinSelectOverlay,weaponSelectOverlay,onlineSetupOverlay,upgradeOverlay,gameOverOverlay,pauseOverlay,leaderboardOverlay]
+  [modeSelectOverlay,skinSelectOverlay,weaponSelectOverlay,onlineSetupOverlay,lobbyOverlay,upgradeOverlay,gameOverOverlay,pauseOverlay,leaderboardOverlay]
     .forEach(o=>o.style.display="none");
   hud2El.style.display=(gameMode==="coop"||gameMode==="online")?"block":"none";
   deadLabel1.style.display=deadLabel2.style.display="none";
@@ -953,37 +1018,132 @@ function initGame(wIds,skins){
 // four choices (its own + the guest's, received over the network) and, once
 // complete, starts the shared game AND tells the guest to build its view.
 // Guard `game` so a late duplicate message can't start twice.
-function maybeStartOnlineGame(){
-  if(!isHost)return;
-  if(game)return; // already started — ignore late/duplicate choice messages
-  if(selectedWeapons[0]&&selectedSkins[0]&&netPeerSkin&&netPeerWeapon){
-    const wIds=[selectedWeapons[0],netPeerWeapon];
-    const skins=[selectedSkins[0],netPeerSkin];
-    // Tell guest first, then build our own — initGame() hides every overlay,
-    // so nothing must re-show the "waiting" screen afterwards (that was the hang).
-    sendMsg({t:"startGame",p0:{weapon:wIds[0],skin:skins[0]},p1:{weapon:wIds[1],skin:skins[1]}});
-    initGame(wIds,skins);
-  }else{
-    // Still waiting — show the host exactly what's missing so a stuck handshake
-    // is diagnosable instead of a blank "waiting" screen.
-    updateWaitingDiagnostic();
-  }
+// ── Lobby ──────────────────────────────────────────────────
+function openLobby(){
+  [modeSelectOverlay,onlineSetupOverlay,skinSelectOverlay,weaponSelectOverlay,
+   upgradeOverlay,gameOverOverlay,pauseOverlay,leaderboardOverlay]
+    .forEach(o=>o.style.display="none");
+  lobbyFocusZone="skin";lobbySkinFocus=0;lobbyWeaponFocus=0;
+  buildLobbySkinCards();
+  buildLobbyWeaponCards();
+  renderLobby();
+  lobbyOverlay.style.display="flex";
 }
-// Shows which of the 4 required picks (host skin/weapon, guest skin/weapon)
-// have arrived, so a stuck "waiting" screen reveals the actual cause.
-function updateWaitingDiagnostic(){
-  if(upgradeOverlay.style.display!=="flex")return;
-  const rows=[
-    ["Ton drapeau", isHost?!!selectedSkins[0]:true],
-    ["Ton arme", isHost?!!selectedWeapons[0]:true],
-    ["Drapeau ami", isHost?!!netPeerSkin:"?"],
-    ["Arme ami", isHost?!!netPeerWeapon:"?"],
-  ];
-  const mark=v=>v===true?"✅":(v==="?"?"⏳":"❌");
-  upgradeCards.innerHTML=
-    `<div style="color:#9ca3af;font-size:13px;text-align:left;line-height:1.9">`+
-    rows.map(([l,v])=>`${mark(v)} ${l}`).join("<br>")+
-    `</div>`;
+// Broadcast our own slot's current choices + ready state to the peer.
+function sendLobbyState(){
+  const me=lobby[mySlot()];
+  sendMsg({t:"lobby",slot:mySlot(),skin:me.skin,weapon:me.weapon,ready:me.ready});
+}
+function myReady(){return lobby[mySlot()].ready}
+
+function buildLobbySkinCards(){
+  lobbySkinCards.innerHTML="";
+  FLAGS.forEach(([code,name],i)=>{
+    const btn=document.createElement("button");
+    const sel=lobby[mySlot()].skin===code;
+    const focused=i===lobbySkinFocus&&lobbyFocusZone==="skin";
+    btn.className="flag-btn"+(sel?" selected":"")+(focused?" ws-focused":"")+(myReady()?" locked":"");
+    btn.title=name;
+    btn.innerHTML=`<img src="${FLAG_BASE_URL}${code}.svg" alt="${name}" loading="lazy">`;
+    btn.onclick=()=>{if(myReady()||selectionLocked())return;lobby[mySlot()].skin=code;sendLobbyState();buildLobbySkinCards();renderLobby()};
+    lobbySkinCards.appendChild(btn);
+  });
+}
+function buildLobbyWeaponCards(){
+  lobbyWeaponCards.innerHTML="";
+  WEAPON_LIST.forEach((w,i)=>{
+    const sel=lobby[mySlot()].weapon===w.id;
+    const focused=i===lobbyWeaponFocus&&lobbyFocusZone==="weapon";
+    const card=document.createElement("button");
+    card.className="card"+(sel?" ws-focused":"")+(focused?" ws-focused":"")+(myReady()?" locked":"");
+    card.style.borderColor=sel?"#fff":w.color;
+    card.style.boxShadow=`0 0 ${sel?26:16}px ${w.color}${sel?"aa":"33"}`;
+    card.innerHTML=`<div class="card-rar" style="color:${w.color}">Arme</div>`+
+      `<div class="card-name">${w.name}</div><div class="card-desc">${w.desc}</div>`;
+    card.onclick=()=>{if(myReady()||selectionLocked())return;lobby[mySlot()].weapon=w.id;sendLobbyState();buildLobbyWeaponCards();renderLobby()};
+    lobbyWeaponCards.appendChild(card);
+  });
+}
+// Render both players' summary panels + ready button label.
+function renderLobby(){
+  const weaponName=id=>{const w=WEAPONS[id];return w?w.name:id};
+  lobbyPlayers.innerHTML=[0,1].map(slot=>{
+    const s=lobby[slot];
+    const isMe=slot===mySlot();
+    const color=PLAYER_COLORS[slot];
+    return `<div class="lobby-card${s.ready?" ready":""}" style="border-color:${s.ready?"#4ade80":color}">
+      <div class="lobby-card-name" style="color:${color}">${isMe?"Toi":"Ami"} (J${slot+1})</div>
+      <div class="lobby-card-flag"><img src="${FLAG_BASE_URL}${s.skin}.svg" alt=""></div>
+      <div class="lobby-card-weapon">${weaponName(s.weapon)}</div>
+      <div class="lobby-card-status ${s.ready?"ready":"notready"}">${s.ready?"✓ Prêt":"⏳ Choisit…"}</div>
+    </div>`;
+  }).join("");
+  lobbyReadyBtn.textContent=myReady()?"✓ Prêt !":"✓ Je suis prêt";
+  lobbyReadyBtn.style.opacity=myReady()?"0.6":"1";
+  lobbySkinLabelUpdate();
+  const bothReady=lobby[0].ready&&lobby[1].ready;
+  lobbyHint.textContent=bothReady?"Les deux sont prêts — lancement…"
+    :(myReady()?"En attente de l'autre joueur…":"Choisis ton drapeau et ton arme, puis clique Prêt");
+}
+function lobbySkinLabelUpdate(){
+  const lbl=document.getElementById("lobbySkinLabel");
+  if(lbl)lbl.textContent=myReady()?"Choix verrouillé":"Ton drapeau";
+}
+// Toggle our ready state (locks choices when set — one-way per the design).
+function setReady(){
+  if(myReady())return; // ready is final, cannot un-ready
+  lobby[mySlot()].ready=true;
+  sendLobbyState();
+  buildLobbySkinCards();buildLobbyWeaponCards();renderLobby();
+  maybeStartFromLobby();
+}
+lobbyReadyBtn.onclick=()=>setReady();
+lobbyLeaveBtn.onclick=()=>{closeNetConnection();showModeSelect()};
+
+// Host is authoritative: when BOTH are ready, it builds the game and tells
+// the guest. Guest waits for the startGame message.
+function maybeStartFromLobby(){
+  if(!lobby[0].ready||!lobby[1].ready)return;
+  if(game)return;
+  if(!isHost)return; // only host starts
+  const wIds=[lobby[0].weapon,lobby[1].weapon];
+  const skins=[lobby[0].skin,lobby[1].skin];
+  sendMsg({t:"startGame",p0:{weapon:wIds[0],skin:skins[0]},p1:{weapon:wIds[1],skin:skins[1]}});
+  initGame(wIds,skins);
+}
+// Controller navigation inside the lobby.
+function handleLobbyController(){
+  if(lobbyOverlay.style.display!=="flex")return;
+  const n=isHost?0:1;
+  const locked=myReady();
+  // Zone switching with L/R shoulders isn't guaranteed on all pads, so use
+  // a simple model: up/down moves between skin row → weapon row → ready.
+  if(!locked){
+    if(jp(n,15)){ // right
+      if(lobbyFocusZone==="skin"){lobbySkinFocus=(lobbySkinFocus+1)%FLAGS.length;buildLobbySkinCards()}
+      else if(lobbyFocusZone==="weapon"){lobbyWeaponFocus=(lobbyWeaponFocus+1)%WEAPON_LIST.length;buildLobbyWeaponCards()}
+    }
+    if(jp(n,14)){ // left
+      if(lobbyFocusZone==="skin"){lobbySkinFocus=(lobbySkinFocus-1+FLAGS.length)%FLAGS.length;buildLobbySkinCards()}
+      else if(lobbyFocusZone==="weapon"){lobbyWeaponFocus=(lobbyWeaponFocus-1+WEAPON_LIST.length)%WEAPON_LIST.length;buildLobbyWeaponCards()}
+    }
+    if(jp(n,13)){ // down: skin → weapon → ready
+      lobbyFocusZone=lobbyFocusZone==="skin"?"weapon":"ready";
+      buildLobbySkinCards();buildLobbyWeaponCards();
+    }
+    if(jp(n,12)){ // up: ready → weapon → skin
+      lobbyFocusZone=lobbyFocusZone==="ready"?"weapon":"skin";
+      buildLobbySkinCards();buildLobbyWeaponCards();
+    }
+    if(jp(n,0)){ // A: confirm current zone
+      if(lobbyFocusZone==="skin"){lobby[mySlot()].skin=FLAGS[lobbySkinFocus][0];sendLobbyState();buildLobbySkinCards();renderLobby()}
+      else if(lobbyFocusZone==="weapon"){lobby[mySlot()].weapon=WEAPON_LIST[lobbyWeaponFocus].id;sendLobbyState();buildLobbyWeaponCards();renderLobby()}
+      else if(lobbyFocusZone==="ready"){setReady()}
+    }
+  }else{
+    // When locked, A just re-confirms ready (no-op) — allow B to leave.
+    if(jp(n,1)){closeNetConnection();showModeSelect()}
+  }
 }
 // Guest builds an identical-looking (but non-simulated) game object once the
 // host announces the final configuration; guest never runs update() itself.
@@ -991,7 +1151,7 @@ function startOnlineGuestGame(msg){
   if(game)return; // ignore duplicate startGame
   const wIds=[msg.p0.weapon,msg.p1.weapon];
   const skins=[msg.p0.skin,msg.p1.skin];
-  initGame(wIds,skins); // this also hides the "waiting" overlay
+  initGame(wIds,skins); // this also hides the lobby overlay
 }
 
 // ── Scores ────────────────────────────────────────────────
@@ -1046,7 +1206,7 @@ function refreshModeSelect(){
   updateFullscreenBtn();
 }
 function showModeSelect(){
-  [skinSelectOverlay,weaponSelectOverlay,onlineSetupOverlay,upgradeOverlay,gameOverOverlay,pauseOverlay,leaderboardOverlay]
+  [skinSelectOverlay,weaponSelectOverlay,onlineSetupOverlay,lobbyOverlay,upgradeOverlay,gameOverOverlay,pauseOverlay,leaderboardOverlay]
     .forEach(o=>o.style.display="none");
   setTouchControlsVisible(false);
   if(gameMode==="online")closeNetConnection(); // returning to menu always ends any live session
@@ -1079,13 +1239,6 @@ function lockSelection(){selectLockUntil=performance.now()+350}
 function selectSkin(idx){
   if(selectionLocked())return;
   selectedSkins[skinForPlayer]=FLAGS[idx][0];
-  if(gameMode==="online"){
-    sendMsg({t:"skin",code:FLAGS[idx][0]});
-    skinSelectOverlay.style.display="none";
-    lockSelection(); // don't let this tap bleed into the weapon screen
-    showWeaponSelect(isHost?0:1);
-    return;
-  }
   if(gameMode==="coop"&&skinForPlayer===0){lockSelection();showSkinSelect(1)}
   else{skinSelectOverlay.style.display="none";lockSelection();showWeaponSelect(0)}
 }
@@ -1139,18 +1292,6 @@ function buildWeaponCards(){
 function selectWeapon(idx){
   if(selectionLocked())return;
   selectedWeapons[wsForPlayer]=WEAPON_LIST[idx].id;
-  if(gameMode==="online"){
-    sendMsg({t:"weapon",id:WEAPON_LIST[idx].id});
-    weaponSelectOverlay.style.display="none";
-    lockSelection();
-    // Show the waiting screen FIRST, then try to start. If this pick was the
-    // last of the four, maybeStartOnlineGame() runs initGame() which hides the
-    // waiting overlay again immediately — no hang. If we're still missing the
-    // peer's picks, the waiting screen stays until their messages arrive.
-    showWaitingForWeapon();
-    if(isHost)maybeStartOnlineGame();
-    return;
-  }
   if(gameMode==="coop"&&wsForPlayer===0){lockSelection();showWeaponSelect(1)}
   else{weaponSelectOverlay.style.display="none";initGame(selectedWeapons,selectedSkins)}
 }
@@ -1184,29 +1325,6 @@ function handleWeaponSelectController(){
   if(jp(n,15)||jp(n,13)){wsFocusIdx=(wsFocusIdx+1)%WEAPON_LIST.length;buildWeaponCards()}
   if(jp(n,14)||jp(n,12)){wsFocusIdx=(wsFocusIdx-1+WEAPON_LIST.length)%WEAPON_LIST.length;buildWeaponCards()}
   if(jp(n,0))selectWeapon(wsFocusIdx);
-}
-
-// Simple "waiting for peer" screen reusing the upgrade overlay's shell
-// While waiting, keep re-announcing our picks every second. Data-channel
-// messages can be dropped during the brief window right after connect, so a
-// single send isn't reliable — re-sending until the game actually starts
-// guarantees both sides eventually have all four picks. Cleared in initGame().
-function showWaitingForWeapon(){
-  upgradeSub.textContent="";
-  upgradeTitle.textContent="En attente de l'autre joueur…";
-  upgradeCards.innerHTML="";
-  upgradeOverlay.style.display="flex";
-  updateWaitingDiagnostic();
-  if(waitingResendTimer)clearInterval(waitingResendTimer);
-  waitingResendTimer=setInterval(()=>{
-    if(game){clearInterval(waitingResendTimer);waitingResendTimer=null;return}
-    // Re-send whatever this side has chosen so the peer can't miss it.
-    const myIdx=isHost?0:1;
-    if(selectedSkins[myIdx])sendMsg({t:"skin",code:selectedSkins[myIdx]});
-    if(selectedWeapons[myIdx])sendMsg({t:"weapon",id:selectedWeapons[myIdx]});
-    if(isHost)maybeStartOnlineGame(); // retry start in case a peer msg arrived late
-    else updateWaitingDiagnostic();
-  },1000);
 }
 
 soloBtn.onclick=()=>{tryEnterFullscreenOnMobile();gameMode="solo";selectedWeapons=[];selectedSkins=[null,null];showSkinSelect(0)};
@@ -1945,6 +2063,9 @@ function loop(now){
 
   // 1a. Generic menu nav (main menu, online setup, leaderboard, game over)
   handleMenuController();
+
+  // 1a2. Online lobby controller nav
+  handleLobbyController();
 
   // 1b. Handle skin select controller (before game starts)
   handleSkinSelectController();
