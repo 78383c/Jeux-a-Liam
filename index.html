@@ -225,7 +225,7 @@
     <div class="net-status" id="joinStatus"></div>
   </div>
 
-  <div class="net-warn">🌐 Connexion directe navigateur-à-navigateur (WebRTC via PeerJS). Un service public gratuit sert juste d'annuaire pour que vos deux appareils se trouvent — comme un bottin, pas un centre d'appels — ensuite les données de jeu passent directement entre vous, sans transiter par un serveur.</div>
+  <div class="net-warn">🌐 Connexion directe navigateur-à-navigateur (WebRTC via PeerJS). Un service public gratuit sert juste d'annuaire pour que vos deux appareils se trouvent — comme un bottin, pas un centre d'appels — ensuite les données de jeu passent directement entre vous, sans transiter par un serveur.<br><br>💡 <b>Ça marche mieux sur le même Wi-Fi.</b> Si un des deux appareils est en données mobiles, certains opérateurs empêchent la connexion directe — connectez les deux au même Wi-Fi (ou un partage de connexion) si ça ne marche pas.</div>
   <button class="ui-btn ui-btn-gray" id="backFromOnlineBtn" style="margin-top:16px">← Retour</button>
 </div>
 
@@ -438,10 +438,34 @@ function randomRoomCode(){
   for(let i=0;i<5;i++)s+=chars[Math.floor(Math.random()*chars.length)];
   return s;
 }
+// Explicit STUN list (PeerJS includes some by default, but being explicit
+// maximizes the chance of finding a working NAT-traversal path, since the
+// free PeerJS cloud does NOT include a TURN relay — see connection watchdog
+// below for what happens when direct P2P simply isn't possible).
+const PEER_ICE_CONFIG={iceServers:[
+  {urls:"stun:stun.l.google.com:19302"},
+  {urls:"stun:stun1.l.google.com:19302"},
+  {urls:"stun:stun.cloudflare.com:3478"},
+]};
+
+// Watchdog: STUN-only WebRTC can't traverse every network (symmetric NAT /
+// carrier-grade NAT on mobile data is the common culprit). Without a TURN
+// relay some pairs simply can't connect directly, and PeerJS won't always
+// raise an error for that — it just hangs. This timer turns silent hangs
+// into a clear, actionable message instead of an infinite "waiting" screen.
+let netWatchdogTimer=null;
+function startConnectionWatchdog(onTimeout,ms=25000){
+  clearConnectionWatchdog();
+  netWatchdogTimer=setTimeout(onTimeout,ms);
+}
+function clearConnectionWatchdog(){
+  if(netWatchdogTimer){clearTimeout(netWatchdogTimer);netWatchdogTimer=null}
+}
+
 function setupConnection(c){
   conn=c;
   conn.on("data",msg=>{try{handleMessage(msg)}catch(e){}});
-  conn.on("open",()=>{netConnected=true;onNetConnected()});
+  conn.on("open",()=>{clearConnectionWatchdog();netConnected=true;onNetConnected()});
   conn.on("close",()=>{netConnected=false});
   conn.on("error",()=>{netConnected=false});
 }
@@ -452,7 +476,7 @@ function hostGame(){
   return new Promise((resolve,reject)=>{
     function tryCreate(attemptsLeft){
       roomCode=randomRoomCode();
-      peer=new Peer(roomCode);
+      peer=new Peer(roomCode,{config:PEER_ICE_CONFIG});
       peer.on("open",id=>resolve(id));
       peer.on("connection",c=>{
         if(conn)return; // already paired with a guest — 2-player only, ignore extras
@@ -470,7 +494,7 @@ function hostGame(){
 function joinGame(code){
   isHost=false;
   return new Promise((resolve,reject)=>{
-    peer=new Peer();
+    peer=new Peer({config:PEER_ICE_CONFIG});
     peer.on("error",err=>reject(err));
     peer.on("open",()=>{
       const c=peer.connect(code,{reliable:true,serialization:"json"});
@@ -481,6 +505,7 @@ function joinGame(code){
   });
 }
 function closeNetConnection(){
+  clearConnectionWatchdog();
   try{conn?.close()}catch(e){}
   try{peer?.destroy()}catch(e){}
   peer=null;conn=null;netConnected=false;isHost=false;roomCode=null;
@@ -979,6 +1004,7 @@ restartBtn.onclick=()=>showModeSelect();
 
 // ── Online setup screen wiring ──────────────────────────────
 function resetOnlinePanels(){
+  clearConnectionWatchdog();
   onlineChoiceBtns.style.display="flex";
   hostPanel.style.display="none";joinPanel.style.display="none";
   roomCodeDisplay.textContent="----";hostStatus.textContent="";hostStatus.className="net-status";
@@ -997,6 +1023,11 @@ hostGameBtn.onclick=async()=>{
     const id=await hostGame();
     roomCodeDisplay.textContent=id;
     hostStatus.textContent="En attente qu'un ami rejoigne…";
+    startConnectionWatchdog(()=>{
+      if(netConnected)return; // already connected, nothing to do
+      hostStatus.innerHTML="⏱ Toujours pas connecté après 25s.<br>Essayez d'être sur le même Wi-Fi (le réseau mobile bloque parfois la connexion directe).";
+      hostStatus.className="net-status err";
+    });
   }catch(e){
     hostStatus.textContent="Erreur de connexion: "+(e.message||e.type||e);hostStatus.className="net-status err";
   }
@@ -1014,6 +1045,14 @@ joinRoomBtn.onclick=async()=>{
   joinStatus.textContent="Connexion en cours…";joinStatus.className="net-status";
   try{
     await joinGame(code);
+    // joinGame() resolves once connect() has been *called*, not once the
+    // link actually opens — that's what setupConnection()'s "open" handler
+    // is for. Watch for it timing out (common cause: mobile-data NAT).
+    startConnectionWatchdog(()=>{
+      if(netConnected)return;
+      joinStatus.innerHTML="⏱ Toujours pas connecté après 25s.<br>Essayez d'être sur le même Wi-Fi (le réseau mobile bloque parfois la connexion directe).";
+      joinStatus.className="net-status err";
+    });
   }catch(e){
     const msg=e.type==="peer-unavailable"?"Code introuvable — vérifie qu'il est correct.":("Erreur: "+(e.message||e.type||e));
     joinStatus.textContent=msg;joinStatus.className="net-status err";
