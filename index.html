@@ -438,14 +438,19 @@ function randomRoomCode(){
   for(let i=0;i<5;i++)s+=chars[Math.floor(Math.random()*chars.length)];
   return s;
 }
-// Explicit STUN list (PeerJS includes some by default, but being explicit
-// maximizes the chance of finding a working NAT-traversal path, since the
-// free PeerJS cloud does NOT include a TURN relay — see connection watchdog
-// below for what happens when direct P2P simply isn't possible).
+// ICE servers: STUN (helps peers find each other) + public TURN relays as a
+// fallback. On the same Wi-Fi, STUN alone connects directly. If a network
+// blocks direct P2P (mobile CGNAT, strict firewalls), TURN relays the traffic
+// through a server so the connection still succeeds. These OpenRelay public
+// credentials are community-provided and best-effort — not guaranteed forever,
+// but they cost nothing and dramatically raise the success rate.
 const PEER_ICE_CONFIG={iceServers:[
   {urls:"stun:stun.l.google.com:19302"},
   {urls:"stun:stun1.l.google.com:19302"},
-  {urls:"stun:stun.cloudflare.com:3478"},
+  {urls:"stun:openrelay.metered.ca:80"},
+  {urls:"turn:openrelay.metered.ca:80",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:443?transport=tcp",username:"openrelayproject",credential:"openrelayproject"},
 ]};
 
 // Watchdog: STUN-only WebRTC can't traverse every network (symmetric NAT /
@@ -465,9 +470,28 @@ function clearConnectionWatchdog(){
 function setupConnection(c){
   conn=c;
   conn.on("data",msg=>{try{handleMessage(msg)}catch(e){}});
-  conn.on("open",()=>{clearConnectionWatchdog();netConnected=true;onNetConnected()});
+  const onOpen=()=>{clearConnectionWatchdog();netConnected=true;onNetConnected()};
+  // A DataConnection can already be open by the time we attach this handler
+  // (races on fast local networks). Fire immediately in that case, otherwise
+  // wait for the "open" event.
+  if(c.open)onOpen();else conn.on("open",onOpen);
   conn.on("close",()=>{netConnected=false});
   conn.on("error",()=>{netConnected=false});
+  // Surface the underlying WebRTC ICE state to the status line so a stuck
+  // handshake shows *why* (checking / failed / disconnected) instead of just
+  // hanging on "waiting". PeerJS exposes the RTCPeerConnection as c.peerConnection.
+  try{
+    const rpc=c.peerConnection;
+    if(rpc){
+      rpc.oniceconnectionstatechange=()=>{
+        const st=rpc.iceConnectionState;
+        const el=isHost?hostStatus:joinStatus;
+        if(netConnected)return;
+        if(st==="checking"){el.textContent="Recherche d'une route réseau…";el.className="net-status"}
+        else if(st==="failed"){el.innerHTML="❌ Connexion réseau impossible.<br>Réessaie, ou mets les deux appareils sur le même Wi-Fi.";el.className="net-status err";clearConnectionWatchdog()}
+      };
+    }
+  }catch(e){}
 }
 // Host: claim a short room code as our Peer ID (retrying on collision),
 // then wait for the guest's incoming connection.
@@ -480,6 +504,13 @@ function hostGame(){
       peer.on("open",id=>resolve(id));
       peer.on("connection",c=>{
         if(conn)return; // already paired with a guest — 2-player only, ignore extras
+        hostStatus.textContent="Ami trouvé ! Établissement de la connexion…";
+        hostStatus.className="net-status";
+        startConnectionWatchdog(()=>{
+          if(netConnected)return;
+          hostStatus.innerHTML="⏱ La connexion n'aboutit pas.<br>Réessaie, ou mets les deux appareils sur le même Wi-Fi.";
+          hostStatus.className="net-status err";
+        });
         setupConnection(c);
       });
       peer.on("error",err=>{
@@ -497,7 +528,7 @@ function joinGame(code){
     peer=new Peer({config:PEER_ICE_CONFIG});
     peer.on("error",err=>reject(err));
     peer.on("open",()=>{
-      const c=peer.connect(code,{reliable:true,serialization:"json"});
+      const c=peer.connect(code,{reliable:true});
       c.on("error",err=>reject(err));
       setupConnection(c);
       resolve();
