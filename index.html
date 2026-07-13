@@ -820,13 +820,18 @@ function initGame(wIds,skins){
 }
 
 // ── Online multiplayer game start (host authoritative) ─────
-// Host waits until both its own and the guest's skin+weapon picks are known,
-// then starts the shared game and tells the guest to build its local view.
+// Both peers pick skin then weapon in any order/timing. The host collects all
+// four choices (its own + the guest's, received over the network) and, once
+// complete, starts the shared game AND tells the guest to build its view.
+// Guard `game` so a late duplicate message can't start twice.
 function maybeStartOnlineGame(){
   if(!isHost)return;
+  if(game)return; // already started — ignore late/duplicate choice messages
   if(selectedWeapons[0]&&selectedSkins[0]&&netPeerSkin&&netPeerWeapon){
     const wIds=[selectedWeapons[0],netPeerWeapon];
     const skins=[selectedSkins[0],netPeerSkin];
+    // Tell guest first, then build our own — initGame() hides every overlay,
+    // so nothing must re-show the "waiting" screen afterwards (that was the hang).
     sendMsg({t:"startGame",p0:{weapon:wIds[0],skin:skins[0]},p1:{weapon:wIds[1],skin:skins[1]}});
     initGame(wIds,skins);
   }
@@ -834,9 +839,10 @@ function maybeStartOnlineGame(){
 // Guest builds an identical-looking (but non-simulated) game object once the
 // host announces the final configuration; guest never runs update() itself.
 function startOnlineGuestGame(msg){
+  if(game)return; // ignore duplicate startGame
   const wIds=[msg.p0.weapon,msg.p1.weapon];
   const skins=[msg.p0.skin,msg.p1.skin];
-  initGame(wIds,skins);
+  initGame(wIds,skins); // this also hides the "waiting" overlay
 }
 
 // ── Scores ────────────────────────────────────────────────
@@ -879,10 +885,15 @@ function refreshModeSelect(){
         👆 Sans manette: joystick tactile à l'écran disponible
       </div>`
     :"";
+  const padHint=n>=1
+    ?`<div style="margin-top:6px;font-size:12px;color:#4ade80;text-align:center">
+        🎮 Manette: D-pad pour naviguer · A pour choisir
+      </div>`
+    :"";
   ctrlIndicator.innerHTML=
     `<span><span class="ctrl-dot ${n>=1?"on":""}"></span>Manette 1</span>`+
     `<span><span class="ctrl-dot ${n>=2?"on":""}"></span>Manette 2</span>`+
-    mobileHint+touchHint;
+    mobileHint+touchHint+padHint;
 }
 function showModeSelect(){
   [skinSelectOverlay,weaponSelectOverlay,onlineSetupOverlay,upgradeOverlay,gameOverOverlay,pauseOverlay,leaderboardOverlay]
@@ -911,10 +922,12 @@ function buildSkinCards(){
 function selectSkin(idx){
   selectedSkins[skinForPlayer]=FLAGS[idx][0];
   if(gameMode==="online"){
-    // Online: each peer only ever picks their OWN skin, then tells the peer.
+    // Each peer picks only their OWN skin, tells the peer, then moves to
+    // their own weapon select. Host and guest both advance to weapon select
+    // here — the game only starts once maybeStartOnlineGame() has all 4 picks.
     sendMsg({t:"skin",code:FLAGS[idx][0]});
-    if(isHost){maybeStartOnlineGame();skinSelectOverlay.style.display="none";showWaitingForWeapon()}
-    else{skinSelectOverlay.style.display="none";showWeaponSelect(1)}
+    skinSelectOverlay.style.display="none";
+    showWeaponSelect(isHost?0:1);
     return;
   }
   if(gameMode==="coop"&&skinForPlayer===0){showSkinSelect(1)}
@@ -971,8 +984,13 @@ function selectWeapon(idx){
   selectedWeapons[wsForPlayer]=WEAPON_LIST[idx].id;
   if(gameMode==="online"){
     sendMsg({t:"weapon",id:WEAPON_LIST[idx].id});
-    if(isHost){maybeStartOnlineGame();weaponSelectOverlay.style.display="none";showWaitingForWeapon()}
-    else{weaponSelectOverlay.style.display="none";showWaitingForWeapon()}
+    weaponSelectOverlay.style.display="none";
+    // Show the waiting screen FIRST, then try to start. If this pick was the
+    // last of the four, maybeStartOnlineGame() runs initGame() which hides the
+    // waiting overlay again immediately — no hang. If we're still missing the
+    // peer's picks, the waiting screen stays until their messages arrive.
+    showWaitingForWeapon();
+    if(isHost)maybeStartOnlineGame();
     return;
   }
   if(gameMode==="coop"&&wsForPlayer===0){showWeaponSelect(1)}
@@ -1342,6 +1360,9 @@ function showGameOver(){
 // from whatever the host last sent, then the existing render()/updateHUD()
 // draw it exactly like a locally-simulated frame.
 function applyNetworkState(s){
+  // Failsafe: if the guest missed the startGame message but is receiving
+  // state, build the game now from the config embedded in the snapshot.
+  if(!game&&s.cfg){startOnlineGuestGame(s.cfg)}
   if(!game)return;
   game.wave=s.w;game.waveTimer=s.wt;game.kills=s.k;game.score=s.s;
   game.gameOver=s.go;game.paused=s.pa;
@@ -1564,6 +1585,10 @@ function broadcastStateIfDue(now){
   if(now-netLastStateSendTime<NET_STATE_INTERVAL)return;
   netLastStateSendTime=now;
   sendMsg({t:"state",
+    // cfg lets a guest that somehow missed the startGame message still build
+    // its game object from the very first state snapshot it receives.
+    cfg:{p0:{weapon:game.players[0].weapon.id,skin:game.players[0].skin},
+         p1:{weapon:game.players[1].weapon.id,skin:game.players[1].skin}},
     w:game.wave,wt:game.waveTimer,k:game.kills,s:game.score,go:game.gameOver,pa:game.paused,
     pl:game.players.map(p=>({x:p.x,y:p.y,hp:p.hp,maxHp:p.maxHp,dead:p.dead,
       fa:p.facingAngle,ms:p.meleeSwing,et:p.excaliburTier,
@@ -1672,6 +1697,64 @@ function render(){
   }
 }
 
+// ── Generic menu controller navigation ────────────────────
+// Makes ANY simple button-list overlay controller-navigable without bespoke
+// per-screen code. Each entry maps an overlay element to the buttons a
+// controller can move between. The first visible overlay in this list that's
+// currently shown captures D-pad/stick + A. This covers main menu, online
+// setup, leaderboard, and game over — the screens that previously ignored
+// controllers entirely. (Skin/weapon/upgrade keep their own richer handlers.)
+let menuFocusIdx=0;
+let lastFocusedOverlay=null;
+function menuNavConfig(){
+  return [
+    {el:modeSelectOverlay,btns:[soloBtn,coopBtn,onlineBtn,showLeaderboardBtn]},
+    {el:onlineSetupOverlay,btns:onlineSetupButtons()},
+    {el:leaderboardOverlay,btns:[closeLeaderboardBtn]},
+    {el:gameOverOverlay,btns:[restartBtn]},
+  ];
+}
+// Online setup shows different buttons depending on sub-panel state.
+function onlineSetupButtons(){
+  if(hostPanel.style.display!=="none")return [copyRoomCodeBtn,backFromOnlineBtn];
+  if(joinPanel.style.display!=="none")return [joinRoomBtn,backFromOnlineBtn];
+  return [hostGameBtn,joinGameBtn,backFromOnlineBtn];
+}
+function applyMenuFocusStyle(btns){
+  btns.forEach((b,i)=>{
+    if(!b)return;
+    b.style.outline=i===menuFocusIdx?"3px solid #fff":"";
+    b.style.outlineOffset=i===menuFocusIdx?"2px":"";
+  });
+}
+function clearMenuFocusStyle(){
+  [soloBtn,coopBtn,onlineBtn,showLeaderboardBtn,hostGameBtn,joinGameBtn,
+   copyRoomCodeBtn,joinRoomBtn,backFromOnlineBtn,closeLeaderboardBtn,restartBtn]
+    .forEach(b=>{if(b){b.style.outline="";b.style.outlineOffset=""}});
+}
+function handleMenuController(){
+  // Find the first visible menu overlay from the config.
+  const cfg=menuNavConfig().find(c=>c.el.style.display==="flex");
+  if(!cfg){if(lastFocusedOverlay){clearMenuFocusStyle();lastFocusedOverlay=null}return}
+  const btns=cfg.btns.filter(Boolean);
+  if(!btns.length)return;
+  // Reset focus to 0 whenever we switch to a different overlay.
+  if(lastFocusedOverlay!==cfg.el){lastFocusedOverlay=cfg.el;menuFocusIdx=0}
+  if(menuFocusIdx>=btns.length)menuFocusIdx=btns.length-1;
+
+  // Any of the 4 controllers can drive menus (so either player can navigate).
+  for(let n=0;n<4;n++){
+    if(jp(n,13)||jp(n,15)){menuFocusIdx=(menuFocusIdx+1)%btns.length}          // down/right
+    if(jp(n,12)||jp(n,14)){menuFocusIdx=(menuFocusIdx-1+btns.length)%btns.length} // up/left
+    if(jp(n,0)){btns[menuFocusIdx].click();return}                             // A = click
+    if(jp(n,1)){ // B = back where a back button exists
+      const back=btns.find(b=>b===backFromOnlineBtn||b===closeLeaderboardBtn);
+      if(back){back.click();return}
+    }
+  }
+  applyMenuFocusStyle(btns);
+}
+
 // ── Main loop ─────────────────────────────────────────────
 function loop(now){
   requestAnimationFrame(loop);
@@ -1682,6 +1765,9 @@ function loop(now){
 
   // 1. Poll gamepad state FIRST (must happen before any jp() calls)
   pollGP();
+
+  // 1a. Generic menu nav (main menu, online setup, leaderboard, game over)
+  handleMenuController();
 
   // 1b. Handle skin select controller (before game starts)
   handleSkinSelectController();
