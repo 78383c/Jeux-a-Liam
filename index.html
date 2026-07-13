@@ -233,6 +233,9 @@
 </div>
 
 <div class="tip" id="tip">Déplace-toi avec WASD</div>
+<div id="netIndicator" style="position:fixed;top:4px;left:50%;transform:translateX(-50%);
+  z-index:9998;font-family:monospace;font-size:10px;color:#94a3b8;
+  background:rgba(0,0,0,0.6);padding:2px 8px;border-radius:6px;display:none"></div>
 
 <!-- Touch controls (mobile) -->
 <div id="touchControls">
@@ -350,6 +353,15 @@
 <script>
 (function(){
 "use strict";
+
+// ── Network indicator (online only) ───────────────────────
+const _netEl=document.getElementById("netIndicator");
+let _netSent=0,_netRecv=0;
+function netIndicatorOn(){_netEl.style.display="block";}
+function netIndicatorUpdate(){
+  if(_netEl.style.display==="none")return;
+  _netEl.textContent=`↑${_netSent} ↓${_netRecv}`;
+}
 
 
 // ── Constants ─────────────────────────────────────────────
@@ -611,12 +623,13 @@ function closeNetConnection(){
 // PeerJS serializes plain objects for us — no manual JSON.stringify/parse needed.
 function sendMsg(msg){
   try{
-    if(conn&&conn.open){conn.send(msg)}
+    if(conn&&conn.open){conn.send(msg);_netSent++;netIndicatorUpdate()}
   }catch(e){}
 }
 
 // Called on BOTH host and guest once the data connection opens.
 function onNetConnected(){
+  netIndicatorOn();
   onlineSetupOverlay.style.display="none";
   gameMode="online";
   showSkinSelect(isHost?0:1); // host is always P1(green), guest is always P2(blue)
@@ -624,6 +637,7 @@ function onNetConnected(){
 
 // ── Network message dispatch (single channel, tagged by `t`) ─
 function handleMessage(msg){
+  _netRecv++;netIndicatorUpdate();
   switch(msg.t){
     case"skin":netPeerSkin=msg.code;maybeStartOnlineGame();break;
     case"weapon":netPeerWeapon=msg.id;maybeStartOnlineGame();break;
@@ -1751,7 +1765,7 @@ function broadcastStateIfDue(now){
     w:game.wave,wt:game.waveTimer,k:game.kills,s:game.score,go:game.gameOver,pa:game.paused,
     pl:game.players.map(p=>({x:p.x,y:p.y,hp:p.hp,maxHp:p.maxHp,dead:p.dead,
       fa:p.facingAngle,ms:p.meleeSwing,et:p.excaliburTier,
-      hd:p.hasDrone,dx:p.droneX,dy:p.droneY,wc:p.weapon.color,wt:p.weapon.type,rg:p.range})),
+      hd:p.hasDrone,dx:p.droneX||0,dy:p.droneY||0,wc:p.weapon.color,wt:p.weapon.type,rg:p.range})),
     en:game.enemies.map(e=>({x:e.x,y:e.y,hp:e.hp,mh:e.maxHp,r:e.radius,
       b:!!e.isBoss,fz:e.frozenTimer,po:e.poisonTimer,hf:e.hitFlash})),
     pr:game.projectiles.map(pr=>({x:pr.x,y:pr.y,rk:!!pr.isRocket,c:pr.color})),
