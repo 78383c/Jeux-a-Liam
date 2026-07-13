@@ -741,6 +741,7 @@ let peer=null,conn=null,roomCode=null;
 let isHost=false,netConnected=false;
 let netRemoteInput={dx:0,dy:0};      // host: latest input received from guest
 let netPeerSkin=null,netPeerWeapon=null; // temp storage during handshake
+let waitingResendTimer=null; // re-announces picks until the online game starts
 let netLastStateSendTime=0;
 const NET_STATE_INTERVAL=1000/15; // throttle state broadcast to ~15Hz
 const PAUSE_BTN_COUNT=2;
@@ -899,6 +900,7 @@ function mkPlayer(weaponId,x,y,id,skinCode){
 
 // ── Init game ─────────────────────────────────────────────
 function initGame(wIds,skins){
+  if(waitingResendTimer){clearInterval(waitingResendTimer);waitingResendTimer=null}
   skins=skins||[null,null];
   const players=gameMode==="solo"
     ?[mkPlayer(wIds[0],W/2,H/2,0,skins[0])]
@@ -941,7 +943,27 @@ function maybeStartOnlineGame(){
     // so nothing must re-show the "waiting" screen afterwards (that was the hang).
     sendMsg({t:"startGame",p0:{weapon:wIds[0],skin:skins[0]},p1:{weapon:wIds[1],skin:skins[1]}});
     initGame(wIds,skins);
+  }else{
+    // Still waiting — show the host exactly what's missing so a stuck handshake
+    // is diagnosable instead of a blank "waiting" screen.
+    updateWaitingDiagnostic();
   }
+}
+// Shows which of the 4 required picks (host skin/weapon, guest skin/weapon)
+// have arrived, so a stuck "waiting" screen reveals the actual cause.
+function updateWaitingDiagnostic(){
+  if(upgradeOverlay.style.display!=="flex")return;
+  const rows=[
+    ["Ton drapeau", isHost?!!selectedSkins[0]:true],
+    ["Ton arme", isHost?!!selectedWeapons[0]:true],
+    ["Drapeau ami", isHost?!!netPeerSkin:"?"],
+    ["Arme ami", isHost?!!netPeerWeapon:"?"],
+  ];
+  const mark=v=>v===true?"✅":(v==="?"?"⏳":"❌");
+  upgradeCards.innerHTML=
+    `<div style="color:#9ca3af;font-size:13px;text-align:left;line-height:1.9">`+
+    rows.map(([l,v])=>`${mark(v)} ${l}`).join("<br>")+
+    `</div>`;
 }
 // Guest builds an identical-looking (but non-simulated) game object once the
 // host announces the final configuration; guest never runs update() itself.
@@ -1137,12 +1159,26 @@ function handleWeaponSelectController(){
 }
 
 // Simple "waiting for peer" screen reusing the upgrade overlay's shell
-// (kept minimal: message only, no cards) while the other side finishes picking.
+// While waiting, keep re-announcing our picks every second. Data-channel
+// messages can be dropped during the brief window right after connect, so a
+// single send isn't reliable — re-sending until the game actually starts
+// guarantees both sides eventually have all four picks. Cleared in initGame().
 function showWaitingForWeapon(){
   upgradeSub.textContent="";
   upgradeTitle.textContent="En attente de l'autre joueur…";
   upgradeCards.innerHTML="";
   upgradeOverlay.style.display="flex";
+  updateWaitingDiagnostic();
+  if(waitingResendTimer)clearInterval(waitingResendTimer);
+  waitingResendTimer=setInterval(()=>{
+    if(game){clearInterval(waitingResendTimer);waitingResendTimer=null;return}
+    // Re-send whatever this side has chosen so the peer can't miss it.
+    const myIdx=isHost?0:1;
+    if(selectedSkins[myIdx])sendMsg({t:"skin",code:selectedSkins[myIdx]});
+    if(selectedWeapons[myIdx])sendMsg({t:"weapon",id:selectedWeapons[myIdx]});
+    if(isHost)maybeStartOnlineGame(); // retry start in case a peer msg arrived late
+    else updateWaitingDiagnostic();
+  },1000);
 }
 
 soloBtn.onclick=()=>{tryEnterFullscreenOnMobile();gameMode="solo";selectedWeapons=[];selectedSkins=[null,null];showSkinSelect(0)};
