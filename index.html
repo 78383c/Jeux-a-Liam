@@ -10,7 +10,7 @@
   html,body{margin:0;padding:0;overflow:hidden;background:#14161a;font-family:'Segoe UI',Roboto,sans-serif;
     touch-action:none;-webkit-user-select:none;user-select:none;overscroll-behavior:none}
   #root{width:100vw;height:100vh;height:100dvh;position:relative}
-  canvas{display:block}
+  canvas{display:block;position:fixed;top:0;left:0}
 
   /* HUD */
   .hud{position:absolute;top:16px;background:rgba(20,22,26,0.75);padding:10px 16px;
@@ -968,6 +968,16 @@ function syncViewportSize(){
   W=vv?Math.round(vv.width):window.innerWidth;
   H=vv?Math.round(vv.height):window.innerHeight;
   canvas.width=W;canvas.height=H;
+  // iOS Safari (and some Android browsers) can pan the *visual* viewport
+  // away from the *layout* viewport's origin — e.g. mid-transition while the
+  // address bar shows/hides. If we don't compensate, part of the canvas can
+  // end up rendered outside what's actually visible. offsetLeft/offsetTop
+  // tell us exactly how far to shift the canvas to stay pinned to what the
+  // user can really see, guaranteeing the whole map is always in frame.
+  const offX=vv?Math.round(vv.offsetLeft):0;
+  const offY=vv?Math.round(vv.offsetTop):0;
+  canvas.style.left=offX+"px";canvas.style.top=offY+"px";
+  touchControls.style.left=offX+"px";touchControls.style.top=offY+"px";
   // Rotating/resizing changes W/H — pull any players back inside the new
   // bounds so they can't end up stranded off the visible area.
   if(game){
