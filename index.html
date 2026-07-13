@@ -35,6 +35,7 @@
   .ot-small{color:#9ca3af;font-size:13px;letter-spacing:2px;text-transform:uppercase}
   .ot-big{color:#fff;font-size:26px;font-weight:800;margin-top:4px}
   .cards{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;max-width:960px;margin-top:22px}
+  button{touch-action:manipulation}
   .card{width:165px;padding:16px 13px;background:#1f232b;border:1.5px solid #555;
     border-radius:12px;cursor:pointer;text-align:left;font-family:inherit;color:inherit;
     transition:transform 0.12s,box-shadow 0.12s}
@@ -206,9 +207,6 @@
 </head>
 <body>
 <div id="root">
-<div id="debugLog" style="position:fixed;bottom:0;left:0;right:0;max-height:35vh;overflow-y:auto;
-  background:rgba(0,0,0,0.85);color:#4ade80;font-family:monospace;font-size:11px;
-  padding:6px 10px;z-index:9999;display:none;white-space:pre-wrap;line-height:1.4"></div>
 <canvas id="gameCanvas"></canvas>
 
 <!-- HUDs -->
@@ -353,20 +351,6 @@
 (function(){
 "use strict";
 
-// ── On-screen debug log (toggled on for online mode) ──────
-const _dbgEl=document.getElementById("debugLog");
-let _dbgEnabled=false;
-function dbg(...args){
-  if(!_dbgEnabled)return;
-  const t=new Date().toLocaleTimeString();
-  const line=t+" "+args.map(a=>typeof a==="object"?JSON.stringify(a):String(a)).join(" ");
-  _dbgEl.textContent=(line+"\n"+_dbgEl.textContent).slice(0,4000);
-}
-function enableDebug(){_dbgEnabled=true;_dbgEl.style.display="block";}
-// Catch any runtime error and show it on screen (invaluable on mobile).
-window.addEventListener("error",e=>{
-  if(_dbgEnabled)dbg("❌ ERREUR:",e.message,"@",(e.filename||"").split("/").pop()+":"+e.lineno);
-});
 
 // ── Constants ─────────────────────────────────────────────
 const PLAYER_RADIUS=14, PLAYER_SPEED=220;
@@ -628,13 +612,11 @@ function closeNetConnection(){
 function sendMsg(msg){
   try{
     if(conn&&conn.open){conn.send(msg)}
-    else if(msg.t!=="state"&&msg.t!=="input"){dbg("⚠️ ENVOI ÉCHOUÉ (conn fermée):",msg.t)}
-  }catch(e){dbg("⚠️ ENVOI ERREUR:",e.message)}
+  }catch(e){}
 }
 
 // Called on BOTH host and guest once the data connection opens.
 function onNetConnected(){
-  dbg("✅ CONNECTÉ! isHost="+isHost);
   onlineSetupOverlay.style.display="none";
   gameMode="online";
   showSkinSelect(isHost?0:1); // host is always P1(green), guest is always P2(blue)
@@ -642,7 +624,6 @@ function onNetConnected(){
 
 // ── Network message dispatch (single channel, tagged by `t`) ─
 function handleMessage(msg){
-  if(msg.t!=="state"&&msg.t!=="input")dbg("📩 reçu:",msg.t,msg.code||msg.id||"");
   switch(msg.t){
     case"skin":netPeerSkin=msg.code;maybeStartOnlineGame();break;
     case"weapon":netPeerWeapon=msg.id;maybeStartOnlineGame();break;
@@ -961,9 +942,7 @@ function initGame(wIds,skins){
 function maybeStartOnlineGame(){
   if(!isHost)return;
   if(game)return; // already started — ignore late/duplicate choice messages
-  dbg("🎯 tentative démarrage: monSkin="+!!selectedSkins[0]+" monArme="+!!selectedWeapons[0]+" skinAmi="+!!netPeerSkin+" armeAmi="+!!netPeerWeapon);
   if(selectedWeapons[0]&&selectedSkins[0]&&netPeerSkin&&netPeerWeapon){
-    dbg("🚀 DÉMARRAGE! envoi startGame");
     const wIds=[selectedWeapons[0],netPeerWeapon];
     const skins=[selectedSkins[0],netPeerSkin];
     // Tell guest first, then build our own — initGame() hides every overlay,
@@ -996,7 +975,6 @@ function updateWaitingDiagnostic(){
 // host announces the final configuration; guest never runs update() itself.
 function startOnlineGuestGame(msg){
   if(game)return; // ignore duplicate startGame
-  dbg("🚀 invité: startGame reçu, construction du jeu");
   const wIds=[msg.p0.weapon,msg.p1.weapon];
   const skins=[msg.p0.skin,msg.p1.skin];
   initGame(wIds,skins); // this also hides the "waiting" overlay
@@ -1077,17 +1055,25 @@ function buildSkinCards(){
     skinCards.appendChild(btn);
   });
 }
+// Guards against a single mobile tap "falling through" onto the next screen
+// that appears in the same spot (ghost-tap / synthetic click). Selections are
+// ignored for a brief window right after a screen transition.
+let selectLockUntil=0;
+function selectionLocked(){return performance.now()<selectLockUntil}
+function lockSelection(){selectLockUntil=performance.now()+350}
+
 function selectSkin(idx){
+  if(selectionLocked())return;
   selectedSkins[skinForPlayer]=FLAGS[idx][0];
   if(gameMode==="online"){
-    dbg("🎨 skin choisi:",FLAGS[idx][0],"→ écran arme");
     sendMsg({t:"skin",code:FLAGS[idx][0]});
     skinSelectOverlay.style.display="none";
+    lockSelection(); // don't let this tap bleed into the weapon screen
     showWeaponSelect(isHost?0:1);
     return;
   }
-  if(gameMode==="coop"&&skinForPlayer===0){showSkinSelect(1)}
-  else{skinSelectOverlay.style.display="none";showWeaponSelect(0)}
+  if(gameMode==="coop"&&skinForPlayer===0){lockSelection();showSkinSelect(1)}
+  else{skinSelectOverlay.style.display="none";lockSelection();showWeaponSelect(0)}
 }
 function showSkinSelect(forPlayer){
   skinForPlayer=forPlayer;skinFocusIdx=0;
@@ -1137,11 +1123,12 @@ function buildWeaponCards(){
   });
 }
 function selectWeapon(idx){
+  if(selectionLocked())return;
   selectedWeapons[wsForPlayer]=WEAPON_LIST[idx].id;
   if(gameMode==="online"){
-    dbg("🔫 arme choisie:",WEAPON_LIST[idx].id);
     sendMsg({t:"weapon",id:WEAPON_LIST[idx].id});
     weaponSelectOverlay.style.display="none";
+    lockSelection();
     // Show the waiting screen FIRST, then try to start. If this pick was the
     // last of the four, maybeStartOnlineGame() runs initGame() which hides the
     // waiting overlay again immediately — no hang. If we're still missing the
@@ -1150,7 +1137,7 @@ function selectWeapon(idx){
     if(isHost)maybeStartOnlineGame();
     return;
   }
-  if(gameMode==="coop"&&wsForPlayer===0){showWeaponSelect(1)}
+  if(gameMode==="coop"&&wsForPlayer===0){lockSelection();showWeaponSelect(1)}
   else{weaponSelectOverlay.style.display="none";initGame(selectedWeapons,selectedSkins)}
 }
 function showWeaponSelect(forPlayer){
@@ -1175,7 +1162,6 @@ function showWeaponSelect(forPlayer){
   modeSelectOverlay.style.display="none";
   buildWeaponCards();
   weaponSelectOverlay.style.display="flex";
-  if(gameMode==="online")dbg("🔫 écran arme affiché (forPlayer="+forPlayer+")");
 }
 // Handle controller navigation on weapon select screen
 function handleWeaponSelectController(){
@@ -1213,8 +1199,6 @@ soloBtn.onclick=()=>{tryEnterFullscreenOnMobile();gameMode="solo";selectedWeapon
 coopBtn.onclick=()=>{tryEnterFullscreenOnMobile();gameMode="coop";selectedWeapons=[];selectedSkins=[null,null];showSkinSelect(0)};
 onlineBtn.onclick=()=>{
   tryEnterFullscreenOnMobile();
-  enableDebug();
-  dbg("🌐 Mode online sélectionné");
   gameMode="online";selectedWeapons=[];selectedSkins=[null,null];
   netPeerSkin=null;netPeerWeapon=null;
   modeSelectOverlay.style.display="none";
