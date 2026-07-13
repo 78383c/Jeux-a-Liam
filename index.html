@@ -308,19 +308,11 @@
   <button class="ui-btn ui-btn-gray" id="backFromOnlineBtn" style="margin-top:16px">← Retour</button>
 </div>
 
-<!-- Online Lobby -->
+<!-- Online Lobby (compact: just status + ready — skin/weapon are picked on their own screens) -->
 <div class="overlay" id="lobbyOverlay" style="display:none">
   <div class="ot-small">Salon en ligne</div>
   <div class="ot-big">Préparez-vous</div>
-  <div id="lobbyPlayers" style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center;margin-top:18px;max-width:96vw"></div>
-  <div style="margin-top:16px">
-    <div class="ot-small" style="text-align:center;margin-bottom:8px" id="lobbySkinLabel">Ton drapeau</div>
-    <div class="flag-grid" id="lobbySkinCards" style="max-width:96vw"></div>
-  </div>
-  <div style="margin-top:12px">
-    <div class="ot-small" style="text-align:center;margin-bottom:8px">Ton arme</div>
-    <div class="cards" id="lobbyWeaponCards" style="max-width:96vw"></div>
-  </div>
+  <div id="lobbyPlayers" style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center;margin-top:16px;max-width:96vw"></div>
   <div style="margin-top:16px;display:flex;gap:12px">
     <button class="ui-btn ui-btn-green" id="lobbyReadyBtn">✓ Prêt</button>
     <button class="ui-btn ui-btn-gray" id="lobbyLeaveBtn">← Quitter</button>
@@ -671,9 +663,12 @@ function onNetConnected(){
   // Reset lobby to defaults each session.
   lobby[0]={skin:"fr",weapon:"saber",ready:false};
   lobby[1]={skin:"us",weapon:"smg",ready:false};
-  openLobby();
-  // Announce our initial (default) choices so the peer's view is populated.
+  // Announce our initial (default) choices so the peer's view is populated
+  // right away, even before we've made our own picks.
   sendLobbyState();
+  // Small dedicated screens (skin, then weapon) instead of one big cramped
+  // screen — keeps every step readable on a phone in landscape.
+  showSkinSelect(mySlot());
 }
 
 // ── Network message dispatch (single channel, tagged by `t`) ─
@@ -767,8 +762,6 @@ const backFromOnlineBtn=document.getElementById("backFromOnlineBtn");
 const onlineBtn=document.getElementById("onlineBtn");
 const lobbyOverlay=document.getElementById("lobbyOverlay");
 const lobbyPlayers=document.getElementById("lobbyPlayers");
-const lobbySkinCards=document.getElementById("lobbySkinCards");
-const lobbyWeaponCards=document.getElementById("lobbyWeaponCards");
 const lobbyReadyBtn=document.getElementById("lobbyReadyBtn");
 const lobbyLeaveBtn=document.getElementById("lobbyLeaveBtn");
 const lobbyHint=document.getElementById("lobbyHint");
@@ -825,8 +818,6 @@ const lobby={
 };
 function mySlot(){return isHost?0:1}
 function peerSlot(){return isHost?1:0}
-let lobbyFocusZone="skin"; // "skin" | "weapon" | "ready" for controller nav
-let lobbySkinFocus=0,lobbyWeaponFocus=0;
 let netLastStateSendTime=0;
 const NET_STATE_INTERVAL=1000/15; // throttle state broadcast to ~15Hz
 const PAUSE_BTN_COUNT=2;
@@ -1023,9 +1014,6 @@ function openLobby(){
   [modeSelectOverlay,onlineSetupOverlay,skinSelectOverlay,weaponSelectOverlay,
    upgradeOverlay,gameOverOverlay,pauseOverlay,leaderboardOverlay]
     .forEach(o=>o.style.display="none");
-  lobbyFocusZone="skin";lobbySkinFocus=0;lobbyWeaponFocus=0;
-  buildLobbySkinCards();
-  buildLobbyWeaponCards();
   renderLobby();
   lobbyOverlay.style.display="flex";
 }
@@ -1036,35 +1024,7 @@ function sendLobbyState(){
 }
 function myReady(){return lobby[mySlot()].ready}
 
-function buildLobbySkinCards(){
-  lobbySkinCards.innerHTML="";
-  FLAGS.forEach(([code,name],i)=>{
-    const btn=document.createElement("button");
-    const sel=lobby[mySlot()].skin===code;
-    const focused=i===lobbySkinFocus&&lobbyFocusZone==="skin";
-    btn.className="flag-btn"+(sel?" selected":"")+(focused?" ws-focused":"")+(myReady()?" locked":"");
-    btn.title=name;
-    btn.innerHTML=`<img src="${FLAG_BASE_URL}${code}.svg" alt="${name}" loading="lazy">`;
-    btn.onclick=()=>{if(myReady()||selectionLocked())return;lobby[mySlot()].skin=code;sendLobbyState();buildLobbySkinCards();renderLobby()};
-    lobbySkinCards.appendChild(btn);
-  });
-}
-function buildLobbyWeaponCards(){
-  lobbyWeaponCards.innerHTML="";
-  WEAPON_LIST.forEach((w,i)=>{
-    const sel=lobby[mySlot()].weapon===w.id;
-    const focused=i===lobbyWeaponFocus&&lobbyFocusZone==="weapon";
-    const card=document.createElement("button");
-    card.className="card"+(sel?" ws-focused":"")+(focused?" ws-focused":"")+(myReady()?" locked":"");
-    card.style.borderColor=sel?"#fff":w.color;
-    card.style.boxShadow=`0 0 ${sel?26:16}px ${w.color}${sel?"aa":"33"}`;
-    card.innerHTML=`<div class="card-rar" style="color:${w.color}">Arme</div>`+
-      `<div class="card-name">${w.name}</div><div class="card-desc">${w.desc}</div>`;
-    card.onclick=()=>{if(myReady()||selectionLocked())return;lobby[mySlot()].weapon=w.id;sendLobbyState();buildLobbyWeaponCards();renderLobby()};
-    lobbyWeaponCards.appendChild(card);
-  });
-}
-// Render both players' summary panels + ready button label.
+// Render both players' compact status panels + ready button label.
 function renderLobby(){
   const weaponName=id=>{const w=WEAPONS[id];return w?w.name:id};
   lobbyPlayers.innerHTML=[0,1].map(slot=>{
@@ -1080,21 +1040,16 @@ function renderLobby(){
   }).join("");
   lobbyReadyBtn.textContent=myReady()?"✓ Prêt !":"✓ Je suis prêt";
   lobbyReadyBtn.style.opacity=myReady()?"0.6":"1";
-  lobbySkinLabelUpdate();
   const bothReady=lobby[0].ready&&lobby[1].ready;
   lobbyHint.textContent=bothReady?"Les deux sont prêts — lancement…"
-    :(myReady()?"En attente de l'autre joueur…":"Choisis ton drapeau et ton arme, puis clique Prêt");
-}
-function lobbySkinLabelUpdate(){
-  const lbl=document.getElementById("lobbySkinLabel");
-  if(lbl)lbl.textContent=myReady()?"Choix verrouillé":"Ton drapeau";
+    :(myReady()?"En attente de l'autre joueur…":"Clique Prêt pour confirmer");
 }
 // Toggle our ready state (locks choices when set — one-way per the design).
 function setReady(){
   if(myReady())return; // ready is final, cannot un-ready
   lobby[mySlot()].ready=true;
   sendLobbyState();
-  buildLobbySkinCards();buildLobbyWeaponCards();renderLobby();
+  renderLobby();
   maybeStartFromLobby();
 }
 lobbyReadyBtn.onclick=()=>setReady();
@@ -1111,39 +1066,12 @@ function maybeStartFromLobby(){
   sendMsg({t:"startGame",p0:{weapon:wIds[0],skin:skins[0]},p1:{weapon:wIds[1],skin:skins[1]}});
   initGame(wIds,skins);
 }
-// Controller navigation inside the lobby.
+// Controller navigation on the compact ready screen: just Ready(A) / Leave(B).
 function handleLobbyController(){
   if(lobbyOverlay.style.display!=="flex")return;
   const n=isHost?0:1;
-  const locked=myReady();
-  // Zone switching with L/R shoulders isn't guaranteed on all pads, so use
-  // a simple model: up/down moves between skin row → weapon row → ready.
-  if(!locked){
-    if(jp(n,15)){ // right
-      if(lobbyFocusZone==="skin"){lobbySkinFocus=(lobbySkinFocus+1)%FLAGS.length;buildLobbySkinCards()}
-      else if(lobbyFocusZone==="weapon"){lobbyWeaponFocus=(lobbyWeaponFocus+1)%WEAPON_LIST.length;buildLobbyWeaponCards()}
-    }
-    if(jp(n,14)){ // left
-      if(lobbyFocusZone==="skin"){lobbySkinFocus=(lobbySkinFocus-1+FLAGS.length)%FLAGS.length;buildLobbySkinCards()}
-      else if(lobbyFocusZone==="weapon"){lobbyWeaponFocus=(lobbyWeaponFocus-1+WEAPON_LIST.length)%WEAPON_LIST.length;buildLobbyWeaponCards()}
-    }
-    if(jp(n,13)){ // down: skin → weapon → ready
-      lobbyFocusZone=lobbyFocusZone==="skin"?"weapon":"ready";
-      buildLobbySkinCards();buildLobbyWeaponCards();
-    }
-    if(jp(n,12)){ // up: ready → weapon → skin
-      lobbyFocusZone=lobbyFocusZone==="ready"?"weapon":"skin";
-      buildLobbySkinCards();buildLobbyWeaponCards();
-    }
-    if(jp(n,0)){ // A: confirm current zone
-      if(lobbyFocusZone==="skin"){lobby[mySlot()].skin=FLAGS[lobbySkinFocus][0];sendLobbyState();buildLobbySkinCards();renderLobby()}
-      else if(lobbyFocusZone==="weapon"){lobby[mySlot()].weapon=WEAPON_LIST[lobbyWeaponFocus].id;sendLobbyState();buildLobbyWeaponCards();renderLobby()}
-      else if(lobbyFocusZone==="ready"){setReady()}
-    }
-  }else{
-    // When locked, A just re-confirms ready (no-op) — allow B to leave.
-    if(jp(n,1)){closeNetConnection();showModeSelect()}
-  }
+  if(jp(n,0))setReady();
+  if(jp(n,1)){closeNetConnection();showModeSelect()}
 }
 // Guest builds an identical-looking (but non-simulated) game object once the
 // host announces the final configuration; guest never runs update() itself.
@@ -1238,6 +1166,14 @@ function lockSelection(){selectLockUntil=performance.now()+350}
 
 function selectSkin(idx){
   if(selectionLocked())return;
+  if(gameMode==="online"){
+    lobby[mySlot()].skin=FLAGS[idx][0];
+    sendLobbyState(); // peer sees this pick live, even before we reach Ready
+    skinSelectOverlay.style.display="none";
+    lockSelection();
+    showWeaponSelect(mySlot());
+    return;
+  }
   selectedSkins[skinForPlayer]=FLAGS[idx][0];
   if(gameMode==="coop"&&skinForPlayer===0){lockSelection();showSkinSelect(1)}
   else{skinSelectOverlay.style.display="none";lockSelection();showWeaponSelect(0)}
@@ -1291,6 +1227,14 @@ function buildWeaponCards(){
 }
 function selectWeapon(idx){
   if(selectionLocked())return;
+  if(gameMode==="online"){
+    lobby[mySlot()].weapon=WEAPON_LIST[idx].id;
+    sendLobbyState();
+    weaponSelectOverlay.style.display="none";
+    lockSelection();
+    openLobby(); // compact ready screen — last step before starting
+    return;
+  }
   selectedWeapons[wsForPlayer]=WEAPON_LIST[idx].id;
   if(gameMode==="coop"&&wsForPlayer===0){lockSelection();showWeaponSelect(1)}
   else{weaponSelectOverlay.style.display="none";initGame(selectedWeapons,selectedSkins)}
@@ -1337,7 +1281,7 @@ onlineBtn.onclick=()=>{
   resetOnlinePanels();
   onlineSetupOverlay.style.display="flex";
 };
-backToModeBtn.onclick=()=>showModeSelect();
+backToModeBtn.onclick=()=>{if(gameMode==="online")closeNetConnection();showModeSelect()};
 showLeaderboardBtn.onclick=()=>{renderLB(leaderboardList);modeSelectOverlay.style.display="none";leaderboardOverlay.style.display="flex"};
 closeLeaderboardBtn.onclick=()=>{leaderboardOverlay.style.display="none";showModeSelect()};
 restartBtn.onclick=()=>showModeSelect();
