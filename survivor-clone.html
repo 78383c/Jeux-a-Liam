@@ -149,6 +149,16 @@
   .net-warn{font-size:11px;color:#f59e0b;text-align:center;max-width:460px;margin-top:14px}
   .net-label{font-size:12px;color:#6b7280;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px}
 
+  /* Dual upgrade panels */
+  .upgrade-panel{display:flex;flex-direction:column;align-items:center;max-width:96vw}
+  .upgrade-panel-title{font-size:14px;font-weight:800;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+  .ready-badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;background:#374151;color:#9ca3af}
+  .ready-badge.ready{background:#166534;color:#4ade80}
+  .card.picked{opacity:0.35;pointer-events:none}
+  .ready-pill{padding:6px 14px;border-radius:8px;background:#1f232b;border:1.5px solid #374151;
+    font-size:12px;font-weight:700;color:#9ca3af;display:flex;align-items:center;gap:6px}
+  .ready-pill.ready{border-color:#4ade80;color:#4ade80}
+
   /* Lobby */
   .lobby-card{background:#1a1d24;border:2px solid #374151;border-radius:12px;
     padding:12px 16px;min-width:150px;text-align:center;transition:border-color .2s}
@@ -354,8 +364,8 @@
 <!-- Upgrade -->
 <div class="overlay" id="upgradeOverlay" style="display:none">
   <div class="ot-small" id="upgradeSub">Vague X terminée</div>
-  <div class="ot-big" id="upgradeTitle">Choisis une amélioration</div>
-  <div class="cards" id="upgradeCards"></div>
+  <div class="ot-big" id="upgradeTitle">Choisissez vos améliorations</div>
+  <div id="upgradePanels" style="display:flex;gap:22px;justify-content:center;flex-wrap:wrap;margin-top:8px"></div>
 </div>
 
 <!-- Pause -->
@@ -363,8 +373,9 @@
   <div class="pause-title">⏸ PAUSE</div>
   <div class="pause-wave" id="pauseWaveInfo"></div>
   <div class="pause-players" id="pauseBody"></div>
+  <div id="pauseReadyRow" style="display:flex;gap:14px;margin-bottom:14px"></div>
   <div class="pause-btns" id="pauseBtns">
-    <button class="pause-btn pfocused" id="resumeBtn">▶ Reprendre</button>
+    <button class="pause-btn pfocused" id="resumeBtn">▶ Prêt à reprendre</button>
     <button class="pause-btn" id="pauseRestartBtn">↺ Recommencer</button>
   </div>
   <div class="pause-hint" id="pauseHint">ESC / Start · ↑↓ pour naviguer · A/✕ pour confirmer</div>
@@ -711,6 +722,11 @@ function handleMessage(msg){
     case"startGame":startOnlineGuestGame(msg);break;
     case"upgradePrompt":showNetworkUpgradePrompt(msg.choices);break;
     case"upgradeChoice":applyNetworkUpgradeChoice(msg.id);break;
+    case"upgradeStatus":applyNetworkUpgradeStatus(msg.ready);break;
+    case"pauseReady": // host receives guest's ready signal
+      if(isHost){pauseReady[msg.slot]=true;if(pauseOverlay.style.display==="flex")renderPauseReady();sendPauseStatus()}
+      break;
+    case"pauseStatus":applyNetworkPauseStatus(msg.ready);break;
     case"input":netRemoteInput.dx=msg.dx;netRemoteInput.dy=msg.dy;break;
     case"state":applyNetworkState(msg);break;
   }
@@ -805,10 +821,11 @@ const fullscreenBtn=document.getElementById("fullscreenBtn");
 const closeLeaderboardBtn=document.getElementById("closeLeaderboardBtn");
 const upgradeOverlay=document.getElementById("upgradeOverlay");
 const upgradeSub=document.getElementById("upgradeSub"),upgradeTitle=document.getElementById("upgradeTitle");
-const upgradeCards=document.getElementById("upgradeCards");
+const upgradePanels=document.getElementById("upgradePanels");
 const pauseOverlay=document.getElementById("pauseOverlay");
 const pauseWaveInfo=document.getElementById("pauseWaveInfo");
 const pauseBody=document.getElementById("pauseBody");
+const pauseReadyRow=document.getElementById("pauseReadyRow");
 const pauseHint=document.getElementById("pauseHint");
 const resumeBtn=document.getElementById("resumeBtn");
 const pauseRestartBtn=document.getElementById("pauseRestartBtn");
@@ -824,7 +841,13 @@ let selectedSkins=[null,null];
 let skinForPlayer=0,skinFocusIdx=0;
 let wsForPlayer=0,wsFocusIdx=0;
 let pauseFocusIdx=0;
-let upgradeFocusIdx=0,currentUpgradePlayer=0;
+// Dual upgrade panels: both players choose simultaneously, each panel
+// tracked independently, wave resumes only once both are ready.
+let upgradeReady=[false,false];
+let upgradeChoices=[null,null]; // rolled choices per player slot
+let upgradeFocus=[0,0];         // per-slot card focus index for controller nav
+// Same pattern for pause: resuming requires both players to confirm ready.
+let pauseReady=[false,false];
 
 // ── Multiplayer state (PeerJS) ──────────────────────────────
 // Protocol: single JSON data connection, messages tagged by `t`:
@@ -1459,13 +1482,18 @@ function updatePauseFocus(){
 function showPause(){
   if(!game||game.gameOver)return;
   game.paused=true;
+  pauseReady=[false,false];
   pauseWaveInfo.textContent=`Vague ${game.wave} · Score ${game.score}`;
   pauseBody.innerHTML=buildPauseStats();
+  renderPauseReady();
   pauseFocusIdx=0;updatePauseFocus();
   document.getElementById("pauseBtns").style.display="flex"; // undo any showNetPause() override
+  pauseRestartBtn.style.display=""; // restore (guest's read-only screen hides it)
+  resumeBtn.textContent=game.players.length>1?"✓ Prêt à reprendre":"▶ Reprendre";
   pauseHint.textContent="ESC / Start · ↑↓ pour naviguer · A/✕ pour confirmer";
   setTouchControlsVisible(false);
   pauseOverlay.style.display="flex";
+  if(gameMode==="online"&&isHost)sendPauseStatus();
 }
 function hidePause(){
   if(!game)return;
@@ -1477,42 +1505,232 @@ function hidePause(){
 // ESC/pause-button presses are ignored so there's never two conflicting
 // sources of truth for game.paused (see applyNetworkState for the guest's
 // matching read-only pause screen, driven entirely by the host's state).
+// With 2 players, ESC only OPENS pause — closing it requires the ready-check
+// (both players must confirm via the Resume button/A/B) so one player can't
+// unilaterally force-resume while the other isn't ready.
 function togglePause(){
   if(gameMode==="online"&&!isHost)return;
-  game?.paused?hidePause():showPause();
+  if(game?.paused){
+    if(game.players.length<=1)hidePause(); // solo: no dual-confirm needed
+  }else{
+    showPause();
+  }
 }
 
-resumeBtn.onclick=()=>hidePause();
+resumeBtn.onclick=()=>{
+  const slot=gameMode==="online"?mySlot():(game.players&&game.players.length>1?0:0);
+  setPauseReady(slot);
+};
 pauseRestartBtn.onclick=()=>{hidePause();showModeSelect()};
 
 // ── Upgrade controller support ─────────────────────────────
-function updateUpgradeFocus(){
-  Array.from(upgradeCards.children).forEach((c,i)=>{
-    const focused=i===upgradeFocusIdx;
-    c.classList.toggle("ws-focused",focused); // reuse existing focus style
-  });
+// ── Dual upgrade panels (both players choose simultaneously) ─
+function renderUpgradePanels(){
+  upgradePanels.innerHTML="";
+  const online=gameMode==="online";
+  const slots=online?[0,1]:[0,1].filter(i=>game.players[i]);
+  for(const i of slots){
+    if(!game.players[i])continue;
+    const color=PLAYER_COLORS[i];
+    const panel=document.createElement("div");
+    panel.className="upgrade-panel";
+    const badge=`<span class="ready-badge${upgradeReady[i]?" ready":""}">${upgradeReady[i]?"✓ Prêt":"⏳"}</span>`;
+    const title=document.createElement("div");
+    title.className="upgrade-panel-title";
+    title.style.color=color;
+    title.innerHTML=`Joueur ${i+1} ${badge}`;
+    panel.appendChild(title);
+    // Online: only OUR OWN slot is interactive here — the peer picks on
+    // their own device. Local (solo/coop): every slot shown is interactive
+    // since both players share this screen.
+    const interactive=!online||i===mySlot();
+    if(!interactive){
+      const ph=document.createElement("div");
+      ph.style.cssText="color:#6b7280;font-size:13px;padding:24px 14px;max-width:180px";
+      ph.textContent=upgradeReady[i]?"A choisi !":"Choisit en ce moment…";
+      panel.appendChild(ph);
+    }else{
+      const cardsDiv=document.createElement("div");
+      cardsDiv.className="cards";
+      (upgradeChoices[i]||[]).forEach((u,ci)=>{
+        const r=RARITY[u.rarity];
+        const card=document.createElement("button");
+        card.className="card"+(ci===upgradeFocus[i]?" ws-focused":"")+(upgradeReady[i]?" picked":"");
+        card.style.borderColor=r.color;
+        card.style.boxShadow=`0 0 18px ${r.color}33`;
+        card.innerHTML=`<div class="card-rar" style="color:${r.color}">${r.label}</div>`+
+          `<div class="card-name">${u.name}</div><div class="card-desc">${u.desc}</div>`;
+        card.onclick=()=>pickUpgradeCard(i,u);
+        cardsDiv.appendChild(card);
+      });
+      panel.appendChild(cardsDiv);
+    }
+    upgradePanels.appendChild(panel);
+  }
+}
+function pickUpgradeCard(slot,u){
+  if(upgradeReady[slot])return;
+  if(gameMode==="online"){
+    if(isHost&&slot===0){
+      u.apply(game.players[0]);
+      upgradeReady[0]=true;
+      renderUpgradePanels();
+      sendUpgradeStatus();
+    }else if(!isHost&&slot===1){
+      sendMsg({t:"upgradeChoice",id:u.id}); // host applies it to player[1] on its side
+      upgradeReady[1]=true;
+      renderUpgradePanels();
+    }
+    return;
+  }
+  u.apply(game.players[slot]);
+  upgradeReady[slot]=true;
+  renderUpgradePanels();
+  maybeFinishLocalUpgrades();
+}
+function maybeFinishLocalUpgrades(){
+  if(upgradeReady.every((r,i)=>!game.players[i]||r)){
+    upgradeOverlay.style.display="none";
+    startNextWave();
+  }
+}
+// Host: broadcast both players' readiness to the guest, and check completion.
+function sendUpgradeStatus(){
+  if(!isHost)return;
+  sendMsg({t:"upgradeStatus",ready:[upgradeReady[0],upgradeReady[1]]});
+  if(upgradeReady[0]&&upgradeReady[1]){
+    upgradeOverlay.style.display="none";
+    startNextWave();
+  }
+}
+// Kicks off the upgrade phase for all modes — called once when a wave ends.
+function startUpgradePhase(){
+  upgradeReady=[false,false];
+  upgradeChoices=[null,null];
+  upgradeFocus=[0,0];
+  setTouchControlsVisible(false);
+  upgradeSub.textContent=`Vague ${game.wave} terminée`;
+  upgradeTitle.textContent=game.players.length>1?"Choisissez vos améliorations":"Choisis une amélioration";
+
+  if(gameMode==="online"){
+    if(!isHost)return; // guest's panel is driven entirely by the upgradePrompt message
+    if(game.players[0]&&!game.players[0].dead)upgradeChoices[0]=rollChoices(5,game.players[0].weapon,game.players[0]);
+    else upgradeReady[0]=true;
+    if(game.players[1]&&!game.players[1].dead){
+      const choices=rollChoices(5,game.players[1].weapon,game.players[1]);
+      netPendingChoices=choices; // apply() fns stay host-side, never serialized
+      sendMsg({t:"upgradePrompt",choices:choices.map(u=>({id:u.id,name:u.name,desc:u.desc,rarity:u.rarity}))});
+    }else upgradeReady[1]=true;
+    renderUpgradePanels();
+    upgradeOverlay.style.display="flex";
+    sendUpgradeStatus();
+    return;
+  }
+  for(let i=0;i<game.players.length;i++){
+    if(game.players[i].dead){upgradeReady[i]=true;continue}
+    upgradeChoices[i]=rollChoices(5,game.players[i].weapon,game.players[i]);
+  }
+  renderUpgradePanels();
+  upgradeOverlay.style.display="flex";
+}
+let netPendingChoices=null; // host's stored choices for guest's turn, so it can look up `apply` by id
+// Host-side: called when guest's {t:"upgradeChoice"} arrives.
+function applyNetworkUpgradeChoice(id){
+  if(!netPendingChoices)return;
+  const u=netPendingChoices.find(c=>c.id===id)||netPendingChoices[0];
+  u.apply(game.players[1]);
+  netPendingChoices=null;
+  upgradeReady[1]=true;
+  renderUpgradePanels();
+  sendUpgradeStatus();
+}
+// Guest-side: called when host's {t:"upgradePrompt"} arrives.
+function showNetworkUpgradePrompt(choices){
+  upgradeReady=[false,false];
+  upgradeChoices[1]=choices; // no apply() fn — guest never simulates, host applies for it
+  upgradeFocus[1]=0;
+  setTouchControlsVisible(false);
+  upgradeSub.textContent=`Vague ${game.wave} terminée`;
+  upgradeTitle.textContent="Choisissez vos améliorations";
+  renderUpgradePanels();
+  upgradeOverlay.style.display="flex";
+}
+// Guest-side: called when host's {t:"upgradeStatus"} arrives (keeps both
+// panels' ready badges in sync, and closes once host has actually started
+// the next wave).
+function applyNetworkUpgradeStatus(ready){
+  upgradeReady=ready.slice();
+  renderUpgradePanels();
+  if(upgradeReady[0]&&upgradeReady[1]){
+    upgradeOverlay.style.display="none";
+    setTouchControlsVisible(true); // BUG FIX: guest never restored this before
+  }
 }
 function handleUpgradeController(){
   if(upgradeOverlay.style.display!=="flex")return;
-  const n=currentUpgradePlayer;
-  const count=upgradeCards.children.length;
-  if(!count)return;
-  if(jp(n,15)||jp(n,13)){upgradeFocusIdx=(upgradeFocusIdx+1)%count;updateUpgradeFocus()}
-  if(jp(n,14)||jp(n,12)){upgradeFocusIdx=(upgradeFocusIdx-1+count)%count;updateUpgradeFocus()}
-  if(jp(n,0)){const c=upgradeCards.children[upgradeFocusIdx];if(c)c.click()}
+  const online=gameMode==="online";
+  const slots=online?[mySlot()]:[0,1].filter(i=>game.players[i]);
+  for(const i of slots){
+    if(upgradeReady[i])continue;
+    const choices=upgradeChoices[i];
+    if(!choices||!choices.length)continue;
+    const n=online?0:i; // online: always our own single local device
+    if(jp(n,15)||jp(n,13)){upgradeFocus[i]=(upgradeFocus[i]+1)%choices.length;renderUpgradePanels()}
+    if(jp(n,14)||jp(n,12)){upgradeFocus[i]=(upgradeFocus[i]-1+choices.length)%choices.length;renderUpgradePanels()}
+    if(jp(n,0)){pickUpgradeCard(i,choices[upgradeFocus[i]])}
+  }
+}
+
+// ── Pause ready-check (both players must confirm to resume) ─
+function renderPauseReady(){
+  const twoPlayers=game.players.length>1;
+  if(!twoPlayers){pauseReadyRow.style.display="none";return}
+  pauseReadyRow.style.display="flex";
+  pauseReadyRow.innerHTML=[0,1].map(i=>
+    `<div class="ready-pill${pauseReady[i]?" ready":""}">${pauseReady[i]?"✓":"⏳"} Joueur ${i+1}</div>`
+  ).join("");
+}
+function setPauseReady(slot){
+  if(pauseReady[slot])return;
+  pauseReady[slot]=true;
+  renderPauseReady();
+  if(gameMode==="online"){
+    sendMsg({t:"pauseReady",slot});
+    if(isHost)sendPauseStatus();
+  }else{
+    maybeResumeFromPause();
+  }
+}
+function maybeResumeFromPause(){
+  if(game.players.length<=1||(pauseReady[0]&&pauseReady[1]))hidePause();
+}
+function sendPauseStatus(){
+  if(!isHost)return;
+  sendMsg({t:"pauseStatus",ready:[pauseReady[0],pauseReady[1]]});
+  maybeResumeFromPause();
+}
+function applyNetworkPauseStatus(ready){
+  pauseReady=ready.slice();
+  renderPauseReady();
 }
 
 // Handle controller navigation inside pause menu
 function handlePauseController(){
+  const guestReadOnly=gameMode==="online"&&!isHost;
+  const btnCount=guestReadOnly?1:PAUSE_BTN_COUNT; // guest has no restart button
   for(let n=0;n<4;n++){
-    // Start (btn 9) is handled exclusively in the main loop to avoid double-toggle.
-    // B button (btn 1) is the secondary resume action inside the menu.
-    if(jp(n,1)){togglePause();return}
-    if(jp(n,12)||jp(n,14)){pauseFocusIdx=(pauseFocusIdx-1+PAUSE_BTN_COUNT)%PAUSE_BTN_COUNT;updatePauseFocus()}
-    if(jp(n,13)||jp(n,15)){pauseFocusIdx=(pauseFocusIdx+1)%PAUSE_BTN_COUNT;updatePauseFocus()}
+    if(jp(n,1)){ // B: quick "ready to resume" for this controller's player
+      const slot=gameMode==="online"?mySlot():(game.players.length>1?n:0);
+      if(slot===0||slot===1)setPauseReady(slot);
+      continue;
+    }
+    if(jp(n,12)||jp(n,14)){pauseFocusIdx=(pauseFocusIdx-1+btnCount)%btnCount;updatePauseFocus()}
+    if(jp(n,13)||jp(n,15)){pauseFocusIdx=(pauseFocusIdx+1)%btnCount;updatePauseFocus()}
     if(jp(n,0)){
-      if(pauseFocusIdx===0)hidePause();
-      else{hidePause();showModeSelect()}
+      if(pauseFocusIdx===0){
+        const slot=gameMode==="online"?mySlot():(game.players.length>1?n:0);
+        if(slot===0||slot===1)setPauseReady(slot);
+      }else{hidePause();showModeSelect()}
     }
   }
 }
@@ -1552,78 +1770,6 @@ function nearestAlive(ex,ey){
 }
 
 // ── Wave management ───────────────────────────────────────
-// Store the current wave's choices for player 1 (guest) when playing online,
-// so applyNetworkUpgradeChoice can look up the `apply` fn by id (functions
-// themselves are never sent over the wire, only id/name/desc/rarity are).
-let netPendingChoices=null;
-function showNextUpgrade(){
-  if(!game.pendingUpgrades.length){startNextWave();return}
-  const pid=game.pendingUpgrades.shift();
-
-  // Online + host + guest's turn: prompt the guest remotely instead of
-  // showing a local overlay for a player that isn't physically at this screen.
-  if(gameMode==="online"&&isHost&&pid===1){
-    const p=game.players[1];
-    const choices=rollChoices(5,p.weapon,p);
-    netPendingChoices=choices;
-    sendMsg({t:"upgradePrompt",choices:choices.map(u=>({id:u.id,name:u.name,desc:u.desc,rarity:u.rarity}))});
-    return; // wait for {t:"upgradeChoice"} — see handleMessage
-  }
-
-  setTouchControlsVisible(false);
-  currentUpgradePlayer=pid; // track which controller to poll
-  upgradeFocusIdx=0;        // reset to first card
-  const p=game.players[pid];
-  upgradeSub.textContent=(gameMode==="coop"||gameMode==="online")
-    ?`Vague ${game.wave} — Joueur ${pid+1}`:`Vague ${game.wave} terminée`;
-  upgradeSub.style.color=PLAYER_COLORS[pid];
-  upgradeTitle.textContent="Choisis une amélioration";
-  const choices=rollChoices(5,p.weapon,p);
-  upgradeCards.innerHTML="";
-  choices.forEach(u=>{
-    const r=RARITY[u.rarity];
-    const card=document.createElement("button");
-    card.className="card";
-    card.style.borderColor=r.color;
-    card.style.boxShadow=`0 0 18px ${r.color}33`;
-    card.innerHTML=`<div class="card-rar" style="color:${r.color}">${r.label}</div>`+
-      `<div class="card-name">${u.name}</div><div class="card-desc">${u.desc}</div>`;
-    card.onclick=()=>{u.apply(p);upgradeOverlay.style.display="none";showNextUpgrade()};
-    upgradeCards.appendChild(card);
-  });
-  updateUpgradeFocus(); // show controller focus on first card
-  upgradeOverlay.style.display="flex";
-}
-// Host-side: called when guest's {t:"upgradeChoice"} arrives.
-function applyNetworkUpgradeChoice(id){
-  if(!netPendingChoices)return;
-  const u=netPendingChoices.find(c=>c.id===id)||netPendingChoices[0];
-  u.apply(game.players[1]);
-  netPendingChoices=null;
-  showNextUpgrade(); // process any remaining pending, or start next wave
-}
-// Guest-side: called when host's {t:"upgradePrompt"} arrives.
-function showNetworkUpgradePrompt(choices){
-  setTouchControlsVisible(false);
-  upgradeSub.textContent=`Vague ${game.wave} — Joueur 2`;
-  upgradeSub.style.color=PLAYER_COLORS[1];
-  upgradeTitle.textContent="Choisis une amélioration";
-  upgradeFocusIdx=0;currentUpgradePlayer=0; // guest always uses their own local device 0
-  upgradeCards.innerHTML="";
-  choices.forEach(u=>{
-    const r=RARITY[u.rarity];
-    const card=document.createElement("button");
-    card.className="card";
-    card.style.borderColor=r.color;
-    card.style.boxShadow=`0 0 18px ${r.color}33`;
-    card.innerHTML=`<div class="card-rar" style="color:${r.color}">${r.label}</div>`+
-      `<div class="card-name">${u.name}</div><div class="card-desc">${u.desc}</div>`;
-    card.onclick=()=>{sendMsg({t:"upgradeChoice",id:u.id});upgradeOverlay.style.display="none"};
-    upgradeCards.appendChild(card);
-  });
-  updateUpgradeFocus();
-  upgradeOverlay.style.display="flex";
-}
 function startNextWave(){
   setTouchControlsVisible(true);
   game.wave+=1;
@@ -1699,16 +1845,23 @@ function applyNetworkState(s){
   game.projectiles=s.pr.map(pr=>({x:sx(pr.x),y:sy(pr.y),isRocket:pr.rk,color:pr.c}));
   updateHUD(); // guest never runs update(), so this is its only HUD refresh point
   if(game.gameOver&&gameOverOverlay.style.display!=="flex")showGameOver();
-  if(game.paused&&pauseOverlay.style.display!=="flex")showNetPause();
-  if(!game.paused&&pauseOverlay.style.display==="flex"&&!isHost)pauseOverlay.style.display="none";
+  if(game.paused&&pauseOverlay.style.display!=="flex"){pauseReady=[false,false];showNetPause()}
+  if(!game.paused&&pauseOverlay.style.display==="flex"&&!isHost){
+    pauseOverlay.style.display="none";
+    setTouchControlsVisible(true); // BUG FIX: guest never restored this before
+  }
 }
 // Guest sees a read-only pause screen when the host pauses; only the host
 // can actually toggle pause (kept simple — avoids two sources of truth).
 function showNetPause(){
   pauseWaveInfo.textContent=`Vague ${game.wave} · Score ${game.score}`;
-  pauseBody.innerHTML=`<div style="color:#9ca3af;font-size:14px">⏸ L'hôte a mis la partie en pause…</div>`;
-  document.getElementById("pauseBtns").style.display="none";
-  pauseHint.textContent="En attente de l'hôte…";
+  pauseBody.innerHTML=`<div style="color:#9ca3af;font-size:14px">⏸ Partie en pause</div>`;
+  renderPauseReady();
+  document.getElementById("pauseBtns").style.display="flex";
+  pauseRestartBtn.style.display="none"; // guest can't force a restart for both players
+  resumeBtn.textContent="✓ Prêt à reprendre";
+  pauseFocusIdx=0;updatePauseFocus();
+  pauseHint.textContent="Clique quand tu es prêt à reprendre";
   pauseOverlay.style.display="flex";
 }
 
@@ -1885,8 +2038,7 @@ function update(dt){
     game.waveTimer-=dt;
     if(game.waveTimer<=0){
       game.waveActive=false;game.enemies=[];game.projectiles=[];
-      game.pendingUpgrades=game.players.filter(p=>!p.dead).map(p=>p.id);
-      showNextUpgrade();
+      startUpgradePhase();
     }
   }
 
