@@ -812,7 +812,7 @@ const goWave=document.getElementById("goWave"),goScore=document.getElementById("
 const restartBtn=document.getElementById("restartBtn");
 
 // ── State ─────────────────────────────────────────────────
-let W=window.innerWidth,H=window.innerHeight;
+let W=0,H=0; // sentinel — guarantees syncViewportSize()'s first real call always applies (see below)
 let game=null,gameMode="solo",selectedWeapons=[];
 let selectedSkins=[null,null];
 let skinForPlayer=0,skinFocusIdx=0;
@@ -965,19 +965,15 @@ function setTouchControlsVisible(visible){
 // fires its own events whenever it changes, so we sync from it when present.
 function syncViewportSize(){
   const vv=window.visualViewport;
-  W=vv?Math.round(vv.width):window.innerWidth;
-  H=vv?Math.round(vv.height):window.innerHeight;
+  const newW=Math.round(vv?vv.width:window.innerWidth);
+  const newH=Math.round(vv?vv.height:window.innerHeight);
+  // Skip the resize entirely if nothing actually changed. canvas.width=W
+  // clears and reallocates the whole backing buffer — an expensive op — and
+  // visualViewport's "scroll" event can fire many times per second on some
+  // phones, so doing this unconditionally caused the choppy movement.
+  if(newW===W&&newH===H)return;
+  W=newW;H=newH;
   canvas.width=W;canvas.height=H;
-  // iOS Safari (and some Android browsers) can pan the *visual* viewport
-  // away from the *layout* viewport's origin — e.g. mid-transition while the
-  // address bar shows/hides. If we don't compensate, part of the canvas can
-  // end up rendered outside what's actually visible. offsetLeft/offsetTop
-  // tell us exactly how far to shift the canvas to stay pinned to what the
-  // user can really see, guaranteeing the whole map is always in frame.
-  const offX=vv?Math.round(vv.offsetLeft):0;
-  const offY=vv?Math.round(vv.offsetTop):0;
-  canvas.style.left=offX+"px";canvas.style.top=offY+"px";
-  touchControls.style.left=offX+"px";touchControls.style.top=offY+"px";
   // Rotating/resizing changes W/H — pull any players back inside the new
   // bounds so they can't end up stranded off the visible area.
   if(game){
@@ -987,11 +983,23 @@ function syncViewportSize(){
     }
   }
 }
+// NOTE: canvas/touchControls use `position:fixed;top:0;left:0` in CSS, which
+// modern mobile browsers already keep pinned to the true visible (visual)
+// viewport automatically. Manually re-applying visualViewport.offsetLeft/Top
+// on top of that double-compensated and pushed the canvas out of view (the
+// "too zoomed in, barely visible" bug) — so we only read width/height here,
+// never offset.
+let vvScrollThrottle=null;
 window.addEventListener("resize",syncViewportSize);
 window.addEventListener("orientationchange",()=>setTimeout(syncViewportSize,50));
 if(window.visualViewport){
   window.visualViewport.addEventListener("resize",syncViewportSize);
-  window.visualViewport.addEventListener("scroll",syncViewportSize);
+  // Throttle scroll specifically — it can fire at a very high rate during
+  // address-bar transitions, and we only care about the settled end state.
+  window.visualViewport.addEventListener("scroll",()=>{
+    if(vvScrollThrottle)return;
+    vvScrollThrottle=requestAnimationFrame(()=>{vvScrollThrottle=null;syncViewportSize()});
+  });
 }
 syncViewportSize();
 
