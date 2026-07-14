@@ -109,13 +109,17 @@
   /* Touch controls — fixed to the *visible* viewport (dvh) so joysticks and
      the pause button never slip behind the mobile browser's address/nav bars. */
   #touchControls{position:fixed;top:0;right:0;bottom:0;left:0;display:none;pointer-events:none;z-index:5}
-  .joy-base{position:absolute;bottom:26px;width:120px;height:120px;border-radius:50%;
-    background:rgba(255,255,255,0.07);border:2px solid rgba(255,255,255,0.18);
-    touch-action:none;pointer-events:auto}
-  #joyBase1{left:26px}
-  #joyBase2{right:26px;display:none}
+  /* Invisible zones that catch the initial touch — left half for P1, right
+     half for P2 (coop only). The joystick itself then floats to wherever the
+     finger actually landed, instead of being confined to a small fixed circle. */
+  .joy-zone{position:absolute;top:0;bottom:0;width:50%;touch-action:none;pointer-events:auto}
+  #joyZone1{left:0}
+  #joyZone2{right:0}
+  .joy-base{position:absolute;width:120px;height:120px;border-radius:50%;
+    background:rgba(255,255,255,0.09);border:2px solid rgba(255,255,255,0.22);
+    transform:translate(-50%,-50%);pointer-events:none;display:none}
   .joy-knob{position:absolute;left:50%;top:50%;width:52px;height:52px;border-radius:50%;
-    background:rgba(255,255,255,0.32);border:1px solid rgba(255,255,255,0.4);
+    background:rgba(255,255,255,0.35);border:1px solid rgba(255,255,255,0.45);
     transform:translate(-50%,-50%);pointer-events:none}
   .touch-pause-btn{position:absolute;top:14px;left:50%;transform:translateX(-50%);
     width:42px;height:42px;border-radius:50%;background:rgba(20,22,26,0.75);
@@ -192,8 +196,7 @@
     .net-warn{font-size:10px;margin-top:8px;max-width:94vw}
 
     /* Joysticks: smaller and tighter to the corners on small screens */
-    .joy-base{width:96px;height:96px;bottom:14px}
-    #joyBase1{left:14px}#joyBase2{right:14px}
+    .joy-base{width:96px;height:96px}
     .joy-knob{width:42px;height:42px}
     .touch-pause-btn{width:38px;height:38px;font-size:15px;top:8px}
 
@@ -253,6 +256,8 @@
 
 <!-- Touch controls (mobile) -->
 <div id="touchControls">
+  <div class="joy-zone" id="joyZone1"></div>
+  <div class="joy-zone" id="joyZone2" style="display:none"></div>
   <div class="joy-base" id="joyBase1"><div class="joy-knob" id="joyKnob1"></div></div>
   <div class="joy-base" id="joyBase2"><div class="joy-knob" id="joyKnob2"></div></div>
   <button class="touch-pause-btn" id="touchPauseBtn">⏸</button>
@@ -754,6 +759,7 @@ function getInput(pid){
 // ── DOM ───────────────────────────────────────────────────
 const canvas=document.getElementById("gameCanvas"),ctx=canvas.getContext("2d",{alpha:false});
 const touchControls=document.getElementById("touchControls");
+const joyZone1=document.getElementById("joyZone1"),joyZone2=document.getElementById("joyZone2");
 const joyBase1=document.getElementById("joyBase1"),joyKnob1=document.getElementById("joyKnob1");
 const joyBase2=document.getElementById("joyBase2"),joyKnob2=document.getElementById("joyKnob2");
 const touchPauseBtn=document.getElementById("touchPauseBtn");
@@ -902,20 +908,26 @@ if(fullscreenBtn){
 document.addEventListener("fullscreenchange",updateFullscreenBtn);
 document.addEventListener("webkitfullscreenchange",updateFullscreenBtn);
 
-function setupJoystick(baseEl,knobEl,pid){
-  const RADIUS=48; // max travel distance in px
+function setupJoystick(zoneEl,baseEl,knobEl,pid){
+  const RADIUS=48; // max knob travel distance in px from wherever the base spawned
+  let originX=0,originY=0;
   function start(e){
     const t=e.changedTouches[0];
     touchJoy[pid].active=true;
     touchJoy[pid].id=t.identifier;
+    // Float the base to exactly where the finger landed instead of forcing
+    // the player to reach a fixed corner circle — much more comfortable to
+    // use one-handed and works regardless of hand size/grip.
+    originX=t.clientX;originY=t.clientY;
+    baseEl.style.left=originX+"px";baseEl.style.top=originY+"px";
+    baseEl.style.display="block";
+    knobEl.style.transform="translate(-50%,-50%)";
     e.preventDefault();
   }
   function move(e){
     for(const t of e.changedTouches){
       if(t.identifier!==touchJoy[pid].id)continue;
-      const rect=baseEl.getBoundingClientRect();
-      const cx=rect.left+rect.width/2,cy=rect.top+rect.height/2;
-      let dx=(t.clientX-cx)/RADIUS,dy=(t.clientY-cy)/RADIUS;
+      let dx=(t.clientX-originX)/RADIUS,dy=(t.clientY-originY)/RADIUS;
       const len=Math.hypot(dx,dy);
       if(len>1){dx/=len;dy/=len}
       touchJoy[pid].dx=dx;touchJoy[pid].dy=dy;
@@ -928,20 +940,21 @@ function setupJoystick(baseEl,knobEl,pid){
       if(t.identifier!==touchJoy[pid].id)continue;
       touchJoy[pid].active=false;touchJoy[pid].id=null;
       touchJoy[pid].dx=0;touchJoy[pid].dy=0;
-      knobEl.style.transform="translate(-50%,-50%)";
+      baseEl.style.display="none"; // hide until the next touch
     }
     e.preventDefault();
   }
   // Touch target stays the element where touchstart fired for the whole
-  // gesture (per spec), so attaching move/end here works even if the
-  // finger drags outside the visual base circle.
-  baseEl.addEventListener("touchstart",start,{passive:false});
-  baseEl.addEventListener("touchmove",move,{passive:false});
-  baseEl.addEventListener("touchend",end,{passive:false});
-  baseEl.addEventListener("touchcancel",end,{passive:false});
+  // gesture (per spec), so attaching move/end to the ZONE (not the visual
+  // base, which now moves around) correctly tracks the finger anywhere in
+  // that half of the screen, even far from where it first touched down.
+  zoneEl.addEventListener("touchstart",start,{passive:false});
+  zoneEl.addEventListener("touchmove",move,{passive:false});
+  zoneEl.addEventListener("touchend",end,{passive:false});
+  zoneEl.addEventListener("touchcancel",end,{passive:false});
 }
-setupJoystick(joyBase1,joyKnob1,0);
-setupJoystick(joyBase2,joyKnob2,1);
+setupJoystick(joyZone1,joyBase1,joyKnob1,0);
+setupJoystick(joyZone2,joyBase2,joyKnob2,1);
 
 touchPauseBtn.addEventListener("touchstart",e=>{
   e.preventDefault();
@@ -955,7 +968,14 @@ touchPauseBtn.addEventListener("touchstart",e=>{
 function setTouchControlsVisible(visible){
   if(!isTouchDevice)return;
   touchControls.style.display=visible?"block":"none";
-  if(visible)joyBase2.style.display=gameMode==="coop"?"block":"none";
+  if(visible){
+    const coop=gameMode==="coop";
+    joyZone1.style.width=coop?"50%":"100%"; // solo: whole screen is P1's movement zone
+    joyZone2.style.display=coop?"block":"none";
+  }
+  // Always hide any floating joystick that might still be showing from a
+  // previous screen/session — it should only appear while actively touched.
+  if(!visible){joyBase1.style.display="none";joyBase2.style.display="none"}
 }
 
 // Mobile browsers show/hide their address bar during scroll and gameplay,
@@ -1960,17 +1980,43 @@ function render(){
     ctx.globalAlpha=pl.meleeSwing/0.18*0.5;ctx.fillStyle=pl.weapon.color;
     ctx.beginPath();ctx.arc(pl.x,pl.y,pl.range,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1}
 
-  // Enemies
-  for(const e of game.enemies){
-    ctx.beginPath();ctx.arc(e.x,e.y,e.radius,0,Math.PI*2);
-    ctx.fillStyle=e.hitFlash>0?"#fff":(e.isBoss?"#dc2626":(e.frozenTimer>0?"#7dd3fc":(e.poisonTimer>0?"#a3e635":ENEMY_COLOR)));
-    ctx.fill();
-    if(e.isBoss){ctx.lineWidth=3;ctx.strokeStyle="#7f1d1d";ctx.stroke()}
-    const bw=e.isBoss?e.radius*3:e.radius*2,bh=e.isBoss?6:4;
-    const by=e.y-e.radius-(e.isBoss?14:8);
-    ctx.fillStyle="rgba(0,0,0,0.5)";ctx.fillRect(e.x-bw/2,by,bw,bh);
-    ctx.fillStyle=e.isBoss?"#fbbf24":"#ef4444";
-    ctx.fillRect(e.x-bw/2,by,bw*Math.max(0,e.hp/e.maxHp),bh);
+  // Enemies — bodies are batched by color (one fill() per color group instead
+  // of per enemy) since individual arc+fill draw calls add up fast once
+  // dozens of enemies are on screen at once. Health bars stay per-enemy
+  // (cheap rects) but the fillStyle is only reassigned when it actually
+  // changes, avoiding redundant state changes in the hot loop.
+  if(game.enemies.length){
+    const groups={}; // color -> array of {x,y,radius}
+    for(const e of game.enemies){
+      const color=e.hitFlash>0?"#fff":(e.isBoss?"#dc2626":(e.frozenTimer>0?"#7dd3fc":(e.poisonTimer>0?"#a3e635":ENEMY_COLOR)));
+      (groups[color]=groups[color]||[]).push(e);
+    }
+    for(const color in groups){
+      ctx.fillStyle=color;
+      ctx.beginPath();
+      for(const e of groups[color]){ctx.moveTo(e.x+e.radius,e.y);ctx.arc(e.x,e.y,e.radius,0,Math.PI*2)}
+      ctx.fill();
+    }
+    // Boss outline ring (rare — a handful at most, individual stroke is fine)
+    ctx.lineWidth=3;ctx.strokeStyle="#7f1d1d";
+    for(const e of game.enemies){
+      if(!e.isBoss)continue;
+      ctx.beginPath();ctx.arc(e.x,e.y,e.radius,0,Math.PI*2);ctx.stroke();
+    }
+    // Health bars — background pass then fill pass, one fillStyle set each
+    // instead of alternating per enemy.
+    ctx.fillStyle="rgba(0,0,0,0.5)";
+    for(const e of game.enemies){
+      const bw=e.isBoss?e.radius*3:e.radius*2,bh=e.isBoss?6:4;
+      const by=e.y-e.radius-(e.isBoss?14:8);
+      ctx.fillRect(e.x-bw/2,by,bw,bh);
+    }
+    for(const e of game.enemies){
+      const bw=e.isBoss?e.radius*3:e.radius*2,bh=e.isBoss?6:4;
+      const by=e.y-e.radius-(e.isBoss?14:8);
+      ctx.fillStyle=e.isBoss?"#fbbf24":"#ef4444";
+      ctx.fillRect(e.x-bw/2,by,bw*Math.max(0,e.hp/e.maxHp),bh);
+    }
   }
 
   // Players
