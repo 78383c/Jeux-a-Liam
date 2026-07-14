@@ -1660,17 +1660,23 @@ function applyNetworkState(s){
   if(!game)return;
   game.wave=s.w;game.waveTimer=s.wt;game.kills=s.k;game.score=s.s;
   game.gameOver=s.go;game.paused=s.pa;
+  // Positions arrive as fractions (0..1) of the HOST's screen — rescale them
+  // to OUR OWN local W/H so the full map fits this screen regardless of how
+  // differently sized it is from the host's (e.g. host on a wide desktop
+  // window, guest on a narrow phone). This is what fixes "I can only see a
+  // small corner of the map" when host/guest have different screen sizes.
+  const sx=fx=>fx*W, sy=fy=>fy*H, srange=frange=>frange*Math.min(W,H);
   for(let i=0;i<s.pl.length;i++){
     const src=s.pl[i],p=game.players[i];
     if(!p)continue;
-    p.x=src.x;p.y=src.y;p.hp=src.hp;p.maxHp=src.maxHp;p.dead=src.dead;
+    p.x=sx(src.x);p.y=sy(src.y);p.hp=src.hp;p.maxHp=src.maxHp;p.dead=src.dead;
     p.facingAngle=src.fa;p.meleeSwing=src.ms;p.excaliburTier=src.et;
-    p.hasDrone=src.hd;p.droneX=src.dx;p.droneY=src.dy;
-    p.weapon.color=src.wc;p.weapon.type=src.wt;p.range=src.rg;
+    p.hasDrone=src.hd;p.droneX=sx(src.dx);p.droneY=sy(src.dy);
+    p.weapon.color=src.wc;p.weapon.type=src.wt;p.range=srange(src.rg);
   }
-  game.enemies=s.en.map(e=>({x:e.x,y:e.y,hp:e.hp,maxHp:e.mh,radius:e.r,
+  game.enemies=s.en.map(e=>({x:sx(e.x),y:sy(e.y),hp:e.hp,maxHp:e.mh,radius:e.r,
     isBoss:e.b,frozenTimer:e.fz,poisonTimer:e.po,hitFlash:e.hf}));
-  game.projectiles=s.pr.map(pr=>({x:pr.x,y:pr.y,isRocket:pr.rk,color:pr.c}));
+  game.projectiles=s.pr.map(pr=>({x:sx(pr.x),y:sy(pr.y),isRocket:pr.rk,color:pr.c}));
   updateHUD(); // guest never runs update(), so this is its only HUD refresh point
   if(game.gameOver&&gameOverOverlay.style.display!=="flex")showGameOver();
   if(game.paused&&pauseOverlay.style.display!=="flex")showNetPause();
@@ -1878,18 +1884,28 @@ function broadcastStateIfDue(now){
   if(gameMode!=="online"||!isHost||!netConnected)return;
   if(now-netLastStateSendTime<NET_STATE_INTERVAL)return;
   netLastStateSendTime=now;
+  // Positions are sent as FRACTIONS of the host's own W/H (0..1), not raw
+  // pixels. The host simulates in its own screen size (e.g. a 1920x960
+  // desktop window) while the guest's canvas can be a completely different
+  // size (e.g. a 720x360 phone) — sending raw host pixels meant the guest
+  // could only ever see whatever fraction of the map happened to fall
+  // within its own smaller canvas bounds. Fractional coords + rescaling on
+  // the receiving end (applyNetworkState) makes both sides see the FULL
+  // playfield, correctly fitted to their own screen.
+  const fx=x=>x/W, fy=y=>y/H;
   sendMsg({t:"state",
     // cfg lets a guest that somehow missed the startGame message still build
     // its game object from the very first state snapshot it receives.
     cfg:{p0:{weapon:game.players[0].weapon.id,skin:game.players[0].skin},
          p1:{weapon:game.players[1].weapon.id,skin:game.players[1].skin}},
     w:game.wave,wt:game.waveTimer,k:game.kills,s:game.score,go:game.gameOver,pa:game.paused,
-    pl:game.players.map(p=>({x:p.x,y:p.y,hp:p.hp,maxHp:p.maxHp,dead:p.dead,
+    pl:game.players.map(p=>({x:fx(p.x),y:fy(p.y),hp:p.hp,maxHp:p.maxHp,dead:p.dead,
       fa:p.facingAngle,ms:p.meleeSwing,et:p.excaliburTier,
-      hd:p.hasDrone,dx:p.droneX||0,dy:p.droneY||0,wc:p.weapon.color,wt:p.weapon.type,rg:p.range})),
-    en:game.enemies.map(e=>({x:e.x,y:e.y,hp:e.hp,mh:e.maxHp,r:e.radius,
+      hd:p.hasDrone,dx:fx(p.droneX||0),dy:fy(p.droneY||0),wc:p.weapon.color,wt:p.weapon.type,
+      rg:p.range/Math.min(W,H)})), // range is a distance, scale it too (see applyNetworkState)
+    en:game.enemies.map(e=>({x:fx(e.x),y:fy(e.y),hp:e.hp,mh:e.maxHp,r:e.radius,
       b:!!e.isBoss,fz:e.frozenTimer,po:e.poisonTimer,hf:e.hitFlash})),
-    pr:game.projectiles.map(pr=>({x:pr.x,y:pr.y,rk:!!pr.isRocket,c:pr.color})),
+    pr:game.projectiles.map(pr=>({x:fx(pr.x),y:fy(pr.y),rk:!!pr.isRocket,c:pr.color})),
   });
 }
 // Guest side: send local device input to host every frame it changes,
