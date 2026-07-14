@@ -9,7 +9,7 @@
 <style>
   html,body{margin:0;padding:0;overflow:hidden;background:#14161a;font-family:'Segoe UI',Roboto,sans-serif;
     touch-action:none;-webkit-user-select:none;user-select:none;overscroll-behavior:none}
-  #root{width:100vw;height:100vh;height:100dvh;position:relative}
+  #root{position:fixed;inset:0}
   canvas{display:block;position:fixed;top:0;left:0}
 
   /* HUD */
@@ -108,7 +108,7 @@
 
   /* Touch controls — fixed to the *visible* viewport (dvh) so joysticks and
      the pause button never slip behind the mobile browser's address/nav bars. */
-  #touchControls{position:fixed;left:0;top:0;width:100vw;height:100vh;height:100dvh;display:none;pointer-events:none;z-index:5}
+  #touchControls{position:fixed;inset:0;display:none;pointer-events:none;z-index:5}
   .joy-base{position:absolute;bottom:26px;width:120px;height:120px;border-radius:50%;
     background:rgba(255,255,255,0.07);border:2px solid rgba(255,255,255,0.18);
     touch-action:none;pointer-events:auto}
