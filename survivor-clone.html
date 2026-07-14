@@ -400,6 +400,7 @@
 const _netEl=document.getElementById("netIndicator");
 let _netSent=0,_netRecv=0;
 function netIndicatorOn(){_netEl.style.display="block";}
+function netIndicatorOff(){_netEl.style.display="none";_netSent=0;_netRecv=0;}
 function netIndicatorUpdate(){
   if(_netEl.style.display==="none")return;
   _netEl.textContent=`↑${_netSent} ↓${_netRecv}`;
@@ -685,6 +686,7 @@ function closeNetConnection(){
   netRemoteInput={dx:0,dy:0};netPeerSkin=null;netPeerWeapon=null;
   lobby[0]={skin:"fr",weapon:"saber",ready:false};
   lobby[1]={skin:"us",weapon:"smg",ready:false};
+  netIndicatorOff();
 }
 // PeerJS serializes plain objects for us — no manual JSON.stringify/parse needed.
 function sendMsg(msg){
@@ -844,6 +846,7 @@ let pauseFocusIdx=0;
 // Dual upgrade panels: both players choose simultaneously, each panel
 // tracked independently, wave resumes only once both are ready.
 let upgradeReady=[false,false];
+let upgradePickedId=[null,null]; // which card was chosen per slot, so it can stay highlighted once ready
 let upgradeChoices=[null,null]; // rolled choices per player slot
 let upgradeFocus=[0,0];         // per-slot card focus index for controller nav
 // Same pattern for pause: resuming requires both players to confirm ready.
@@ -1166,7 +1169,9 @@ function maybeStartFromLobby(){
 // Controller navigation on the compact ready screen: just Ready(A) / Leave(B).
 function handleLobbyController(){
   if(lobbyOverlay.style.display!=="flex")return;
-  const n=isHost?0:1;
+  const n=0; // online always reads the local device's own gamepad slot 0
+             // (consistent with skin/weapon select and upgrade panels — a
+             // guest's physical gamepad reports as ITS OWN slot 0, never 1)
   if(jp(n,0))setReady();
   if(jp(n,1)){closeNetConnection();showModeSelect()}
 }
@@ -1241,6 +1246,9 @@ function showModeSelect(){
   setTouchControlsVisible(false);
   if(gameMode==="online")closeNetConnection(); // returning to menu always ends any live session
   resetOnlinePanels();
+  game=null; // clear the finished match so render() stops drawing/iterating stale
+             // enemies/players — they could otherwise faintly show through the
+             // semi-transparent, blurred menu overlays, and cost CPU for nothing.
   refreshModeSelect();
   modeSelectOverlay.style.display="flex";
 }
@@ -1555,9 +1563,15 @@ function renderUpgradePanels(){
       (upgradeChoices[i]||[]).forEach((u,ci)=>{
         const r=RARITY[u.rarity];
         const card=document.createElement("button");
-        card.className="card"+(ci===upgradeFocus[i]?" ws-focused":"")+(upgradeReady[i]?" picked":"");
+        const isPicked=upgradeReady[i]&&upgradePickedId[i]===u.id;
+        // Once ready, only the chosen card stays highlighted — everything
+        // else in the panel dims, instead of the whole panel dimming
+        // uniformly (which made it impossible to see what you'd picked).
+        const dimmed=upgradeReady[i]&&!isPicked;
+        card.className="card"+(ci===upgradeFocus[i]&&!upgradeReady[i]?" ws-focused":"")+
+          (dimmed?" picked":"")+(isPicked?" ws-focused":"");
         card.style.borderColor=r.color;
-        card.style.boxShadow=`0 0 18px ${r.color}33`;
+        card.style.boxShadow=isPicked?`0 0 26px ${r.color}aa`:`0 0 18px ${r.color}33`;
         card.innerHTML=`<div class="card-rar" style="color:${r.color}">${r.label}</div>`+
           `<div class="card-name">${u.name}</div><div class="card-desc">${u.desc}</div>`;
         card.onclick=()=>pickUpgradeCard(i,u);
@@ -1570,6 +1584,7 @@ function renderUpgradePanels(){
 }
 function pickUpgradeCard(slot,u){
   if(upgradeReady[slot])return;
+  upgradePickedId[slot]=u.id;
   if(gameMode==="online"){
     if(isHost&&slot===0){
       u.apply(game.players[0]);
@@ -1608,6 +1623,7 @@ function startUpgradePhase(){
   upgradeReady=[false,false];
   upgradeChoices=[null,null];
   upgradeFocus=[0,0];
+  upgradePickedId=[null,null];
   setTouchControlsVisible(false);
   upgradeSub.textContent=`Vague ${game.wave} terminée`;
   upgradeTitle.textContent=game.players.length>1?"Choisissez vos améliorations":"Choisis une amélioration";
@@ -1648,6 +1664,7 @@ function applyNetworkUpgradeChoice(id){
 function showNetworkUpgradePrompt(choices){
   upgradeReady=[false,false];
   upgradeChoices[1]=choices; // no apply() fn — guest never simulates, host applies for it
+  upgradePickedId[1]=null;
   upgradeFocus[1]=0;
   setTouchControlsVisible(false);
   upgradeSub.textContent=`Vague ${game.wave} terminée`;
@@ -2033,6 +2050,11 @@ function update(dt){
     game.particles[i].life-=dt;if(game.particles[i].life<=0)game.particles.splice(i,1);
   }
 
+  // Player death (must run BEFORE the wave-timer check below, so a player
+  // who dies on the exact same tick the wave ends is correctly excluded from
+  // the upgrade phase instead of briefly being treated as still alive).
+  for(const p of game.players)if(!p.dead&&p.hp<=0){p.dead=true;p.hp=0}
+
   // Wave timer
   if(game.waveActive){
     game.waveTimer-=dt;
@@ -2041,9 +2063,6 @@ function update(dt){
       startUpgradePhase();
     }
   }
-
-  // Player death
-  for(const p of game.players)if(!p.dead&&p.hp<=0){p.dead=true;p.hp=0}
 
   // Game over
   if(!game.gameOver&&game.players.every(p=>p.dead)){game.gameOver=true;showGameOver()}
@@ -2309,14 +2328,23 @@ function loop(now){
 
   // Online guest: never simulate locally — just keep sending local input to
   // the host and let applyNetworkState() (triggered by incoming messages)
-  // drive everything the player sees. Skip all local update/pause logic.
+  // drive everything the player sees. Skip all local update/pause SIMULATION,
+  // but still let the guest navigate the pause screen with a gamepad (bug:
+  // this used to be unreachable for guests since we returned before it).
   if(gameMode==="online"&&!isHost){
     sendLocalInputIfDue(now);
+    if(game.paused)handlePauseController();
     return;
   }
 
-  // 6. If paused: only handle pause controller nav
-  if(game.paused){handlePauseController();return}
+  // 6. If paused: handle pause nav locally, but the HOST must still broadcast
+  // so the guest actually finds out it's paused (returning early before this
+  // meant the guest's screen never received pa:true and never showed pause).
+  if(game.paused){
+    handlePauseController();
+    if(gameMode==="online"&&isHost)broadcastStateIfDue(now);
+    return;
+  }
 
   // 7. Normal update
   if(upgradeOverlay.style.display==="none"&&!game.gameOver){
